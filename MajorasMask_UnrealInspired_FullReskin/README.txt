@@ -24,3 +24,21 @@ Source files
 - `Preview_Reskin_Progress.png`: progress overview of the original procedural material sources and coverage.
 
 The material source maps are original procedural artwork. The O2R and mapping target this repository's 2Ship2Harkinian 5.0.1 resource format.
+
+
+Build pipeline
+--------------
+The final Quest O2R is built directly from the generated PackBuild PNGs by
+`tools/build_texture_pack.py`. It does not run the old archive-wide V0-to-V1
+conversion pass. For each RGBA32 replacement, the builder reads the PNG pixels,
+uses the matching V0 archive entry only as the OTEX header/resource template,
+looks up the original N64 texture format in the pinned zeldaret/mm XML assets,
+and writes the final OTEX V1 RAW-import header and pixels in one build step.
+The HByteScale and VPixelScale values are calculated from the original N64
+format and the original/replacement dimensions.
+
+The 855 entries marked `native-palette-preserve` are not regenerated from their
+RGB5A1 PNG inspection assets. Their original archive resources, including any
+alignment padding, are copied byte-for-byte. Resource names/order and the
+portVersion marker are verified after writing. The workflow runs the direct
+builder regression tests before packaging the artifact.
