@@ -95,7 +95,8 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
             path = os.path.join(root, filename)
             with open(path, "r", encoding="utf-8-sig") as stream:
                 source = stream.read()
-            xml_group = os.path.basename(root)
+            relative_root = Path(root).resolve().relative_to(Path(xml_root).resolve())
+            xml_group = relative_root.parts[0] if relative_root.parts else ""
             for file_match in re.finditer(r'<File\b([^>]*)>(.*?)</File>', source, re.S):
                 file_attrs, body = file_match.group(1), file_match.group(2)
                 file_name_match = re.search(r'\bName="([^"]+)"', file_attrs)
@@ -108,7 +109,7 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
                     archive = archive[:-len(".unarchive")]
                 if out_name_match:
                     archive = file_name + "/" + archive
-                if xml_group in {"code", "misc", "objects", "overlays"} and not archive.startswith(xml_group + "/"):
+                if xml_group in {"code", "misc", "objects", "overlays", "scenes", "rooms"} and not archive.startswith(xml_group + "/"):
                     archive = xml_group + "/" + archive
                 for tex_match in re.finditer(r'<Texture\b([^>]*)/?>', body):
                     attrs = tex_match.group(1)

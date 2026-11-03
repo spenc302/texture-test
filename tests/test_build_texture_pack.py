@@ -179,6 +179,34 @@ class DirectPackBuildTests(unittest.TestCase):
                 self.assertAlmostEqual(h_scale, 8.0)  # IA8 = one byte per texel
                 self.assertAlmostEqual(v_scale, 2.0)
 
+    def test_indexes_scene_and_room_groups_from_nested_xml_directories(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scenes = root / "xml" / "scenes" / "overworld"
+            rooms = root / "xml" / "rooms" / "dungeon"
+            scenes.mkdir(parents=True)
+            rooms.mkdir(parents=True)
+            (scenes / "spot01.xml").write_text(
+                '<File Name="spot01_scene">'
+                '<Texture Name="gSpot01GrassTex" Format="rgba16" Offset="0xAA50"/>'
+                '</File>',
+                encoding="utf-8",
+            )
+            (rooms / "spot01_room_0.xml").write_text(
+                '<File Name="spot01_room_0">'
+                '<Texture Name="gSpot01RoomTex" Format="ia8" Offset="0x120"/>'
+                '</File>',
+                encoding="utf-8",
+            )
+
+            formats = load_original_formats(root / "xml")
+            self.assertEqual(
+                formats["scenes/spot01_scene/gSpot01GrassTex"], "rgba16"
+            )
+            self.assertEqual(
+                formats["rooms/spot01_room_0/gSpot01RoomTex"], "ia8"
+            )
+
     def test_rejects_manifest_archive_dimension_mismatch(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
