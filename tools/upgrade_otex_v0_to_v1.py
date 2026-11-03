@@ -69,8 +69,23 @@ def load_override_manifest(path: str) -> dict[str, tuple[int, int, int, int]]:
 
 
 def load_original_formats(xml_root: str) -> dict[str, str]:
-    """Read original N64 texture formats from zeldaret/mm asset XML."""
+    """Read original N64 formats and index both symbolic and offset-based OTR names.
+
+    The decomp XML often names a texture symbolically (for example gHilite1Tex),
+    while 2Ship's extracted OTR resource is named from its source-file offset
+    (for example gameplay_keep_Tex_00C830). Indexing only the XML symbol misses
+    thousands of valid resources, especially object textures.
+    """
     formats: dict[str, str] = {}
+
+    def add(key: str, fmt: str, source: str) -> None:
+        previous = formats.get(key)
+        if previous is not None and previous != fmt:
+            raise ValueError(
+                f"Conflicting original formats for {key}: {previous} vs {fmt} ({source})"
+            )
+        formats[key] = fmt
+
     for root, _, files in os.walk(xml_root):
         for filename in files:
             if not filename.lower().endswith(".xml"):
@@ -78,35 +93,53 @@ def load_original_formats(xml_root: str) -> dict[str, str]:
             path = os.path.join(root, filename)
             with open(path, "r", encoding="utf-8-sig") as fh:
                 source = fh.read()
-            for file_match in re.finditer(r'<File\b([^>]*)>(.*?)</File>', source, re.S):
+
+            xml_group = os.path.basename(root)
+            for file_match in re.finditer(r'<File\\b([^>]*)>(.*?)</File>', source, re.S):
                 file_attrs, body = file_match.group(1), file_match.group(2)
-                file_name_match = re.search(r'\bName="([^"]+)"', file_attrs)
-                out_name_match = re.search(r'\bOutName="([^"]+)"', file_attrs)
+                file_name_match = re.search(r'\\bName="([^"]+)"', file_attrs)
+                out_name_match = re.search(r'\\bOutName="([^"]+)"', file_attrs)
                 if not file_name_match:
                     continue
-                # "code" + OutName="circle_tex" maps to code/circle_tex.
-                # "foo.unarchive" maps to the extracted archive name "foo".
-                archive = out_name_match.group(1) if out_name_match else file_name_match.group(1)
+
+                file_name = file_name_match.group(1)
+                archive = out_name_match.group(1) if out_name_match else file_name
                 if archive.endswith(".unarchive"):
                     archive = archive[:-len(".unarchive")]
                 if out_name_match:
-                    archive = file_name_match.group(1) + "/" + archive
-                # The XML directory is part of resource paths for code/ and misc/.
-                # Archive XML lives under assets/xml/archives but its resources
-                # are addressed by archive name alone.
-                xml_group = os.path.basename(root)
+                    archive = file_name + "/" + archive
                 if xml_group in {"code", "misc", "objects"} and not archive.startswith(xml_group + "/"):
                     archive = xml_group + "/" + archive
-                for tex_match in re.finditer(r'<Texture\b([^>]*)/?>', body):
+
+                for tex_match in re.finditer(r'<Texture\\b([^>]*)/?>', body):
                     attrs = tex_match.group(1)
-                    nm = re.search(r'\bName="([^"]+)"', attrs)
-                    fm = re.search(r'\bFormat="([^"]+)"', attrs)
-                    if not nm or not fm:
+                    nm = re.search(r'\\bName="([^"]+)"', attrs)
+                    fm = re.search(r'\\bFormat="([^"]+)"', attrs)
+                    if not fm:
                         continue
-                    key, fmt = archive + "/" + nm.group(1), fm.group(1).lower()
-                    if key in formats and formats[key] != fmt:
-                        raise ValueError(f"Conflicting original formats for {key}: {formats[key]} vs {fmt}")
-                    formats[key] = fmt
+                    fmt = fm.group(1).lower()
+                    if fmt not in BYTES_PER_PIXEL:
+                        continue
+
+                    if nm:
+                        add(archive + "/" + nm.group(1), fmt, path)
+
+                    # 2Ship resource names commonly encode the texture's byte
+                    # offset instead of the XML symbol. Index the documented
+                    # Offset directly; do not infer a format from dimensions.
+                    offset_match = re.search(r'\\bOffset="(0x[0-9A-Fa-f]+|[0-9]+)"', attrs)
+                    if offset_match:
+                        offset = int(offset_match.group(1), 0)
+                        suffix = f"{offset:06X}"
+                        aliases = (
+                            f"{file_name}_Tex_{suffix}",
+                            f"{file_name}Tex_{suffix}",
+                            f"{file_name}_TLUT_{suffix}",
+                            f"{file_name}TLUT_{suffix}",
+                        )
+                        for alias in aliases:
+                            add(archive + "/" + alias, fmt, path)
+
     if not formats:
         raise ValueError(f"No texture format definitions found under {xml_root}")
     return formats
