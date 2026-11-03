@@ -108,7 +108,7 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
                     archive = archive[:-len(".unarchive")]
                 if out_name_match:
                     archive = file_name + "/" + archive
-                if xml_group in {"code", "misc", "objects"} and not archive.startswith(xml_group + "/"):
+                if xml_group in {"code", "misc", "objects", "overlays"} and not archive.startswith(xml_group + "/"):
                     archive = xml_group + "/" + archive
                 for tex_match in re.finditer(r'<Texture\b([^>]*)/?>', body):
                     attrs = tex_match.group(1)
@@ -132,6 +132,13 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
                             f"{file_name}TLUT_{suffix}",
                         ):
                             add(archive + "/" + alias, fmt, path)
+    # Some engine-owned code textures are declared in C rather than assets/XML.
+    # z_fbdemo_circle.c loads gCircleTex through the 4-bit texture-block macro
+    # with G_IM_FMT_I, so its original N64 format is I4.
+    circle_key = "code/fbdemo_circle/gCircleTex"
+    if circle_key not in formats:
+        formats[circle_key] = "i4"
+
     if not formats:
         raise ValueError(f"No texture format definitions found under {xml_root}")
     return formats
@@ -225,7 +232,16 @@ def build_archive(
     }
     rgba_entries = {key: value for key, value in manifest_by_resource.items() if key not in palette_entries}
 
-    missing_formats = sorted(set(rgba_entries) - set(formats))
+    # The OTR exporter adds _Overflow to the resource key when a source
+    # texture crosses the source archive's logical boundary. It does not
+    # change the underlying texture definition; resolve against the base key.
+    resolved_formats: dict[str, str] = {}
+    for resource in rgba_entries:
+        base_resource = resource[:-len("_Overflow")] if resource.endswith("_Overflow") else resource
+        if base_resource in formats:
+            resolved_formats[resource] = formats[base_resource]
+
+    missing_formats = sorted(set(rgba_entries) - set(resolved_formats))
     if missing_formats:
         raise ValueError(
             f"Missing original N64 formats for {len(missing_formats)} RGBA32 resources; "
@@ -285,7 +301,7 @@ def build_archive(
                         image_size = image.size
                         rgba_pixels = image.convert("RGBA").tobytes()
                     converted = make_v1_rgba32(
-                        name, original, rgba_pixels, image_size, entry, formats[name]
+                        name, original, rgba_pixels, image_size, entry, resolved_formats[name]
                     )
                     stats["built-v1-rgba32-from-png"] += 1
 
