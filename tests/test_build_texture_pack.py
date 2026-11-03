@@ -122,6 +122,63 @@ class DirectPackBuildTests(unittest.TestCase):
             base = resource[:-len("_Overflow")]
             self.assertEqual(formats[base], "i8")
 
+    def test_resolves_missing_xml_format_from_c_display_list(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            decomp = root / "decomp"
+            xml_objects = decomp / "assets" / "xml" / "objects"
+            source_code = decomp / "src" / "code"
+            packbuild = root / "PackBuild"
+            xml_objects.mkdir(parents=True)
+            source_code.mkdir(parents=True)
+            packbuild.mkdir()
+
+            # The target is an anonymous offset texture. Its format is only
+            # explicit in the decompiled display-list macro, not the XML.
+            (xml_objects / "test.xml").write_text(
+                '<File Name="test"><Texture Name="known" Format="rgba16"/></File>',
+                encoding="utf-8",
+            )
+            (source_code / "z_test.c").write_text(
+                'Gfx testDL[] = { '
+                'gsDPLoadTextureBlock(object_test_Tex_000010, G_IM_FMT_IA, '
+                'G_IM_SIZ_8b, 4, 4, 0, G_TX_NOMIRROR, G_TX_NOMIRROR, '
+                'G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD) '
+                '};',
+                encoding="utf-8",
+            )
+
+            asset = packbuild / "objects/test/texture.rgba32.png"
+            asset.parent.mkdir(parents=True)
+            Image.new("RGBA", (4, 4), (20, 40, 60, 255)).save(asset)
+            source = root / "source.o2r"
+            output = root / "output.o2r"
+            with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr("portVersion", PORT_VERSION)
+                archive.writestr(
+                    "objects/test/object_test_Tex_000010",
+                    make_v0(1, 4, 4, bytes(4 * 4 * 4)),
+                )
+
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"entries": [{
+                "resource": "objects/test/object_test_Tex_000010",
+                "asset": "objects/test/texture.rgba32.png",
+                "originalSize": [2, 2],
+                "overrideSize": [4, 4],
+                "styleMode": "material-blend",
+            }]}), encoding="utf-8")
+
+            stats = build_archive(
+                source, output, packbuild, manifest, decomp / "assets" / "xml"
+            )
+            self.assertEqual(stats["formats-resolved-from-c-source"], 1)
+            with zipfile.ZipFile(output) as built:
+                result = built.read("objects/test/object_test_Tex_000010")
+                h_scale, v_scale = struct.unpack_from("<ff", result, 0x50)
+                self.assertAlmostEqual(h_scale, 8.0)  # IA8 = one byte per texel
+                self.assertAlmostEqual(v_scale, 2.0)
+
     def test_rejects_manifest_archive_dimension_mismatch(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

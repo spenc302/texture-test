@@ -144,6 +144,119 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
     return formats
 
 
+
+def _split_c_arguments(arguments: str) -> list[str]:
+    """Split a C macro argument list without splitting nested expressions."""
+    result: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(arguments):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            result.append(arguments[start:index].strip())
+            start = index + 1
+    result.append(arguments[start:].strip())
+    return result
+
+
+def _c_texture_symbol(expression: str) -> str | None:
+    """Return the referenced asset symbol from a C texture-pointer expression."""
+    ignored = {
+        "const", "volatile", "u8", "s8", "u16", "s16", "u32", "s32",
+        "u64", "s64", "uintptr_t", "intptr_t", "void", "struct",
+    }
+    for token in re.findall(r"\b[A-Za-z_]\w*\b", expression):
+        if token not in ignored and not token.startswith("G_"):
+            if token.startswith(("g", "s", "object_", "scene_", "room_", "D_")):
+                return token
+    return None
+
+
+def load_c_texture_formats(xml_root: str | Path) -> tuple[dict[str, str], set[str]]:
+    """Read exact N64 formats from texture-load macros in decompiled C sources.
+
+    XML definitions do not cover every anonymous texture blob. Decompiled
+    display lists still specify the original G_IM_FMT and G_IM_SIZ explicitly.
+    """
+    decomp_root = Path(xml_root).resolve().parent.parent
+    source_root = decomp_root / "src"
+    if not source_root.is_dir():
+        return {}, set()
+
+    format_names = {
+        ("G_IM_FMT_RGBA", "G_IM_SIZ_16b"): "rgba16",
+        ("G_IM_FMT_RGBA", "G_IM_SIZ_32b"): "rgba32",
+        ("G_IM_FMT_YUV", "G_IM_SIZ_16b"): "yuv16",
+        ("G_IM_FMT_CI", "G_IM_SIZ_4b"): "ci4",
+        ("G_IM_FMT_CI", "G_IM_SIZ_8b"): "ci8",
+        ("G_IM_FMT_IA", "G_IM_SIZ_4b"): "ia4",
+        ("G_IM_FMT_IA", "G_IM_SIZ_8b"): "ia8",
+        ("G_IM_FMT_IA", "G_IM_SIZ_16b"): "ia16",
+        ("G_IM_FMT_I", "G_IM_SIZ_4b"): "i4",
+        ("G_IM_FMT_I", "G_IM_SIZ_8b"): "i8",
+    }
+    discovered: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    call_pattern = re.compile(r"\b(gs|g)DPLoadTexture(Block|Tile)(_4b)?\s*\(")
+
+    for path in source_root.rglob("*.c"):
+        try:
+            source = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        source = re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.S)
+        for match in call_pattern.finditer(source):
+            depth = 1
+            cursor = match.end()
+            while cursor < len(source) and depth:
+                if source[cursor] == "(":
+                    depth += 1
+                elif source[cursor] == ")":
+                    depth -= 1
+                cursor += 1
+            if depth:
+                continue
+
+            args = _split_c_arguments(source[match.end():cursor - 1])
+            is_static = match.group(1) == "gs"
+            is_four_bit = match.group(3) == "_4b"
+            texture_index = 0 if is_static else 1
+            format_index = texture_index + 1
+            size_index = None if is_four_bit else format_index + 1
+            if len(args) <= format_index or (size_index is not None and len(args) <= size_index):
+                continue
+
+            fmt_name = args[format_index].strip()
+            size_name = "G_IM_SIZ_4b" if is_four_bit else args[size_index].strip()
+            pixel_format = format_names.get((fmt_name, size_name))
+            symbol = _c_texture_symbol(args[texture_index])
+            if pixel_format is None or symbol is None:
+                continue
+
+            previous = discovered.get(symbol)
+            if previous is not None and previous != pixel_format:
+                ambiguous.add(symbol)
+                discovered.pop(symbol, None)
+            elif symbol not in ambiguous:
+                discovered[symbol] = pixel_format
+
+    return discovered, ambiguous
+
 def make_v1_rgba32(
     resource: str,
     template: bytes,
@@ -235,11 +348,22 @@ def build_archive(
     # The OTR exporter adds _Overflow to the resource key when a source
     # texture crosses the source archive's logical boundary. It does not
     # change the underlying texture definition; resolve against the base key.
+    # Anonymous texture blobs can be absent from XML, but their original
+    # G_IM_FMT/G_IM_SIZ is still explicit in decompiled display-list macros.
+    c_formats, ambiguous_c_formats = load_c_texture_formats(xml_root)
     resolved_formats: dict[str, str] = {}
+    c_format_resolutions = 0
     for resource in rgba_entries:
         base_resource = resource[:-len("_Overflow")] if resource.endswith("_Overflow") else resource
         if base_resource in formats:
             resolved_formats[resource] = formats[base_resource]
+            continue
+        symbol = base_resource.rsplit("/", 1)[-1]
+        if symbol in ambiguous_c_formats:
+            raise ValueError(f"{resource}: conflicting C display-list formats for texture symbol {symbol}")
+        if symbol in c_formats:
+            resolved_formats[resource] = c_formats[symbol]
+            c_format_resolutions += 1
 
     missing_formats = sorted(set(rgba_entries) - set(resolved_formats))
     if missing_formats:
@@ -249,6 +373,8 @@ def build_archive(
         )
 
     stats: collections.Counter = collections.Counter()
+    if c_format_resolutions:
+        stats["formats-resolved-from-c-source"] = c_format_resolutions
     with zipfile.ZipFile(source_archive, "r") as source:
         source_names = source.namelist()
         if len(source_names) != len(set(source_names)):
