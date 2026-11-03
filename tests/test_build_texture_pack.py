@@ -12,6 +12,7 @@ from tools.build_texture_pack import (
     PORT_VERSION,
     TEX_FLAG_LOAD_AS_RAW,
     build_archive,
+    load_original_formats,
 )
 
 
@@ -102,6 +103,24 @@ class DirectPackBuildTests(unittest.TestCase):
                 self.assertAlmostEqual(v_scale, 1.0)
                 self.assertEqual(data_size, 32)
                 self.assertEqual(result[0x5C:], rgba)
+
+
+    def test_indexes_overlay_group_and_resolves_overflow_alias(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            overlays = root / "overlays"
+            overlays.mkdir()
+            (overlays / "ovl_Arrow_Fire.xml").write_text(
+                '<File Name="ovl_Arrow_Fire">'
+                '<Texture Name="gFireArrowTex" Format="i8" Offset="0xAB0"/>'
+                '</File>',
+                encoding="utf-8",
+            )
+            formats = load_original_formats(root)
+            self.assertEqual(formats["overlays/ovl_Arrow_Fire/gFireArrowTex"], "i8")
+            resource = "overlays/ovl_Arrow_Fire/gFireArrowTex_Overflow"
+            base = resource[:-len("_Overflow")]
+            self.assertEqual(formats[base], "i8")
 
     def test_rejects_manifest_archive_dimension_mismatch(self):
         with tempfile.TemporaryDirectory() as temp:
