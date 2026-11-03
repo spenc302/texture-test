@@ -91,6 +91,12 @@ def load_original_formats(xml_root: str) -> dict[str, str]:
                     archive = archive[:-len(".unarchive")]
                 if out_name_match:
                     archive = file_name_match.group(1) + "/" + archive
+                # The XML directory is part of resource paths for code/ and misc/.
+                # Archive XML lives under assets/xml/archives but its resources
+                # are addressed by archive name alone.
+                xml_group = os.path.basename(root)
+                if xml_group in {"code", "misc"} and not archive.startswith(xml_group + "/"):
+                    archive = xml_group + "/" + archive
                 for tex_match in re.finditer(r'<Texture\b([^>]*)/?>', body):
                     attrs = tex_match.group(1)
                     nm = re.search(r'\bName="([^"]+)"', attrs)
