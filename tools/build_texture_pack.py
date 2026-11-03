@@ -119,17 +119,8 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
                     fmt = format_match.group(1).lower()
                     if fmt not in BYTES_PER_PIXEL:
                         continue
-                    # ZAPD can rename the exported resource independently of
-                    # its C/XML symbol. OTR resource keys use Texture.OutName
-                    # when present, so index both names: the symbolic name is
-                    # useful for source correlation, while OutName is the
-                    # actual archive-facing resource path.
                     if name_match:
                         add(archive + "/" + name_match.group(1), fmt, path)
-                    texture_out_name_match = re.search(r'\bOutName="([^"]+)"', attrs)
-                    if texture_out_name_match:
-                        texture_out_name = texture_out_name_match.group(1).replace("\\", "/")
-                        add(archive + "/" + texture_out_name.lstrip("/"), fmt, path)
                     offset_match = re.search(r'\bOffset="(0x[0-9A-Fa-f]+|[0-9]+)"', attrs)
                     if offset_match:
                         offset = int(offset_match.group(1), 0)
