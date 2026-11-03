@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Upgrade generated texture-test OTEX image resources from V0 to V1.
 
-The current PackBuild archive contains 12,687 RGBA32 replacement images and
-855 native RGBA16/RGB5A1 palette resources. V0 stores only type, dimensions,
-byte count and pixels, so the loader cannot be told to consume the RGBA32
-replacement as an image. V1 adds flags and scale fields.
+The PackBuild archive contains 12,687 RGBA32 replacement images and 855
+native RGBA16 resources. V0 stores only type, dimensions, byte count and
+pixels; V1 adds flags and scale fields.
 
-This converter upgrades type-1 RGBA32 image resources using the originalSize
-and overrideSize dimensions in Overrides_Manifest.json. HByteScale and
-VPixelScale are the corresponding upscale multipliers. Type-2 palette
-resources are copied byte-for-byte, including any legacy alignment padding.
+RGBA32 replacements must use LOAD_AS_RAW, not LOAD_AS_IMG. The raw importer
+uses HByteScale and VPixelScale to preserve N64 tile/stride semantics when
+display lists load only part of a texture. LOAD_AS_IMG uploads the entire
+replacement directly and bypasses that tile-aware path. Scale values come
+from originalSize and overrideSize in Overrides_Manifest.json. Native type-2
+RGBA16 resources are copied byte-for-byte, including legacy alignment padding.
 All resource names and the portVersion marker are preserved.
 
 The output is a valid O2R ZIP archive using stored ZIP entries. This avoids
@@ -30,7 +31,7 @@ OTEX_MAGIC = 0x4F544558
 OTEX_HEADER_SIZE = 0x40
 V0_PIXEL_OFFSET = 0x50
 V1_PIXEL_OFFSET = 0x5C
-TEX_FLAG_LOAD_AS_IMG = 0x02
+TEX_FLAG_LOAD_AS_RAW = 0x01
 
 
 def load_override_manifest(path: str) -> dict[str, tuple[int, int, int, int]]:
@@ -86,8 +87,10 @@ def convert_entry(name: str, data: bytes, overrides: dict[str, tuple[int, int, i
 
     # Native-format palettes (type 2) must remain byte-for-byte identical.
     # They can contain alignment padding beyond their declared pixel bytes.
+    if texture_type == 2:
+        return data, "preserved-rgba16"
     if texture_type != 1:
-        return data, f"preserved-type-{texture_type}"
+        raise ValueError(f"{name}: unsupported V0 texture type {texture_type}")
 
     if name not in overrides:
         raise ValueError(f"{name}: RGBA32 resource has no Overrides_Manifest.json entry")
@@ -124,7 +127,7 @@ def convert_entry(name: str, data: bytes, overrides: dict[str, tuple[int, int, i
         texture_type,
         width,
         height,
-        TEX_FLAG_LOAD_AS_IMG,
+        TEX_FLAG_LOAD_AS_RAW,
         h_scale,
         v_scale,
         data_size,
