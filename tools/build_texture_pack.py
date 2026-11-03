@@ -143,8 +143,6 @@ def build_archive(
     rgba_entries = {key: value for key, value in manifest_by_resource.items() if key not in palette_entries}
 
     stats: collections.Counter = collections.Counter()
-    if c_format_resolutions:
-        stats["formats-resolved-from-c-source"] = c_format_resolutions
     with zipfile.ZipFile(source_archive, "r") as source:
         source_names = source.namelist()
         if len(source_names) != len(set(source_names)):
