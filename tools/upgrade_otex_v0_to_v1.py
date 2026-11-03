@@ -6,8 +6,9 @@ The current PackBuild archive contains 12,687 RGBA32 replacement images and
 byte count and pixels, so the loader cannot be told to consume the RGBA32
 replacement as an image. V1 adds flags and scale fields.
 
-This converter upgrades only type-1 RGBA32 image resources using
-TEX_FLAG_LOAD_AS_IMG, HByteScale=1.0 and VPixelScale=1.0. Type-2 palette
+This converter upgrades type-1 RGBA32 image resources using the originalSize
+and overrideSize dimensions in Overrides_Manifest.json. HByteScale and
+VPixelScale are the corresponding upscale multipliers. Type-2 palette
 resources are copied byte-for-byte, including any legacy alignment padding.
 All resource names and the portVersion marker are preserved.
 
@@ -19,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import collections
+import json
+import math
 import os
 import struct
 import zipfile
@@ -30,7 +33,38 @@ V1_PIXEL_OFFSET = 0x5C
 TEX_FLAG_LOAD_AS_IMG = 0x02
 
 
-def convert_entry(name: str, data: bytes) -> tuple[bytes, str]:
+def load_override_manifest(path: str) -> dict[str, tuple[int, int, int, int]]:
+    """Map each resource key to (native width, native height, override width, override height)."""
+    with open(path, "r", encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    entries = manifest.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError(f"{path}: manifest has no entries array")
+    overrides = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}: malformed manifest entry")
+        resource, original, replacement = entry.get("resource"), entry.get("originalSize"), entry.get("overrideSize")
+        if not isinstance(resource, str) or not isinstance(original, list) or not isinstance(replacement, list):
+            raise ValueError(f"{path}: entry missing resource/originalSize/overrideSize")
+        if len(original) != 2 or len(replacement) != 2:
+            raise ValueError(f"{path}: {resource}: dimensions must be [width, height]")
+        try:
+            ow, oh = int(original[0]), int(original[1])
+            rw, rh = int(replacement[0]), int(replacement[1])
+        except (TypeError, ValueError):
+            raise ValueError(f"{path}: {resource}: non-integer dimensions")
+        if min(ow, oh, rw, rh) <= 0:
+            raise ValueError(f"{path}: {resource}: dimensions must be positive")
+        if resource in overrides:
+            raise ValueError(f"{path}: duplicate resource key {resource}")
+        overrides[resource] = (ow, oh, rw, rh)
+    if not overrides:
+        raise ValueError(f"{path}: no texture entries found")
+    return overrides
+
+
+def convert_entry(name: str, data: bytes, overrides: dict[str, tuple[int, int, int, int]]) -> tuple[bytes, str]:
     """Return (resource bytes, conversion status)."""
     if name == "portVersion":
         return data, "port-marker"
@@ -55,6 +89,19 @@ def convert_entry(name: str, data: bytes) -> tuple[bytes, str]:
     if texture_type != 1:
         return data, f"preserved-type-{texture_type}"
 
+    if name not in overrides:
+        raise ValueError(f"{name}: RGBA32 resource has no Overrides_Manifest.json entry")
+    native_width, native_height, replacement_width, replacement_height = overrides[name]
+    if (width, height) != (replacement_width, replacement_height):
+        raise ValueError(
+            f"{name}: archive dimensions {width}x{height} do not match manifest "
+            f"overrideSize {replacement_width}x{replacement_height}"
+        )
+    h_scale = float(replacement_width) / float(native_width)
+    v_scale = float(replacement_height) / float(native_height)
+    if not math.isfinite(h_scale) or not math.isfinite(v_scale) or h_scale <= 0 or v_scale <= 0:
+        raise ValueError(f"{name}: invalid scale factors {h_scale}x{v_scale}")
+
     expected_size = width * height * 4
     if data_size != expected_size:
         raise ValueError(
@@ -78,17 +125,18 @@ def convert_entry(name: str, data: bytes) -> tuple[bytes, str]:
         width,
         height,
         TEX_FLAG_LOAD_AS_IMG,
-        1.0,
-        1.0,
+        h_scale,
+        v_scale,
         data_size,
     )
     return bytes(header) + v1_fields + pixels, "upgraded-rgba32"
 
 
-def convert_archive(source_path: str, output_path: str) -> collections.Counter:
+def convert_archive(source_path: str, output_path: str, manifest_path: str) -> collections.Counter:
     if os.path.abspath(source_path) == os.path.abspath(output_path):
         raise ValueError("Input and output paths must be different")
 
+    overrides = load_override_manifest(manifest_path)
     stats: collections.Counter = collections.Counter()
     with zipfile.ZipFile(source_path, "r") as source:
         source_names = source.namelist()
@@ -97,7 +145,7 @@ def convert_archive(source_path: str, output_path: str) -> collections.Counter:
             output.comment = source_comment
             for info in source.infolist():
                 original = source.read(info.filename)  # also validates source CRC
-                converted, status = convert_entry(info.filename, original)
+                converted, status = convert_entry(info.filename, original, overrides)
                 stats[status] += 1
 
                 # Keep the resource names and timestamps. Store entries rather
@@ -130,9 +178,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", help="source .o2r archive")
     parser.add_argument("output", help="destination .o2r archive")
+    parser.add_argument(
+        "--manifest",
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                             "MajorasMask_UnrealInspired_FullReskin", "Overrides_Manifest.json"),
+        help="override manifest containing originalSize and overrideSize (default: repository manifest)",
+    )
     args = parser.parse_args()
 
-    stats = convert_archive(args.input, args.output)
+    stats = convert_archive(args.input, args.output, args.manifest)
     print("OTEX conversion complete:")
     for name in sorted(stats):
         print(f"  {name}: {stats[name]}")
