@@ -95,7 +95,7 @@ def load_original_formats(xml_root: str) -> dict[str, str]:
                 # Archive XML lives under assets/xml/archives but its resources
                 # are addressed by archive name alone.
                 xml_group = os.path.basename(root)
-                if xml_group in {"code", "misc"} and not archive.startswith(xml_group + "/"):
+                if xml_group in {"code", "misc", "objects"} and not archive.startswith(xml_group + "/"):
                     archive = xml_group + "/" + archive
                 for tex_match in re.finditer(r'<Texture\b([^>]*)/?>', body):
                     attrs = tex_match.group(1)
