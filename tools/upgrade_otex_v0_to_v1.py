@@ -95,10 +95,10 @@ def load_original_formats(xml_root: str) -> dict[str, str]:
                 source = fh.read()
 
             xml_group = os.path.basename(root)
-            for file_match in re.finditer(r'<File\\b([^>]*)>(.*?)</File>', source, re.S):
+            for file_match in re.finditer(r'<File\b([^>]*)>(.*?)</File>', source, re.S):
                 file_attrs, body = file_match.group(1), file_match.group(2)
-                file_name_match = re.search(r'\\bName="([^"]+)"', file_attrs)
-                out_name_match = re.search(r'\\bOutName="([^"]+)"', file_attrs)
+                file_name_match = re.search(r'\bName="([^"]+)"', file_attrs)
+                out_name_match = re.search(r'\bOutName="([^"]+)"', file_attrs)
                 if not file_name_match:
                     continue
 
@@ -111,10 +111,10 @@ def load_original_formats(xml_root: str) -> dict[str, str]:
                 if xml_group in {"code", "misc", "objects"} and not archive.startswith(xml_group + "/"):
                     archive = xml_group + "/" + archive
 
-                for tex_match in re.finditer(r'<Texture\\b([^>]*)/?>', body):
+                for tex_match in re.finditer(r'<Texture\b([^>]*)/?>', body):
                     attrs = tex_match.group(1)
-                    nm = re.search(r'\\bName="([^"]+)"', attrs)
-                    fm = re.search(r'\\bFormat="([^"]+)"', attrs)
+                    nm = re.search(r'\bName="([^"]+)"', attrs)
+                    fm = re.search(r'\bFormat="([^"]+)"', attrs)
                     if not fm:
                         continue
                     fmt = fm.group(1).lower()
@@ -127,7 +127,7 @@ def load_original_formats(xml_root: str) -> dict[str, str]:
                     # 2Ship resource names commonly encode the texture's byte
                     # offset instead of the XML symbol. Index the documented
                     # Offset directly; do not infer a format from dimensions.
-                    offset_match = re.search(r'\\bOffset="(0x[0-9A-Fa-f]+|[0-9]+)"', attrs)
+                    offset_match = re.search(r'\bOffset="(0x[0-9A-Fa-f]+|[0-9]+)"', attrs)
                     if offset_match:
                         offset = int(offset_match.group(1), 0)
                         suffix = f"{offset:06X}"
