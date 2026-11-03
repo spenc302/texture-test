@@ -33,7 +33,7 @@ OTEX_HEADER_SIZE = 0x40
 V0_PIXEL_OFFSET = 0x50
 V1_PIXEL_OFFSET = 0x5C
 TEX_FLAG_LOAD_AS_RAW = 0x01
-BYTES_PER_PIXEL = {"rgba32": 4.0, "rgba16": 2.0, "ci8": 1.0, "ia8": 1.0, "i8": 1.0, "ci4": 0.5, "ia4": 0.5, "i4": 0.5, "yuv16": 2.0}
+BYTES_PER_PIXEL = {"rgba32": 4.0, "rgba16": 2.0, "ci8": 1.0, "ia8": 1.0, "ia16": 2.0, "i8": 1.0, "ci4": 0.5, "ia4": 0.5, "i4": 0.5, "yuv16": 2.0}
 
 
 def load_override_manifest(path: str) -> dict[str, tuple[int, int, int, int]]:
@@ -78,12 +78,12 @@ def load_original_formats(xml_root: str) -> dict[str, str]:
             path = os.path.join(root, filename)
             with open(path, "r", encoding="utf-8-sig") as fh:
                 source = fh.read()
-            for file_match in re.finditer(r'<File\\b[^>]*\\bName="([^"]+)"[^>]*>(.*?)</File>', source, re.S):
+            for file_match in re.finditer(r'<File\b[^>]*\bName="([^"]+)"[^>]*>(.*?)</File>', source, re.S):
                 archive, body = file_match.group(1), file_match.group(2)
-                for tex_match in re.finditer(r'<Texture\\b([^>]*)/?>', body):
+                for tex_match in re.finditer(r'<Texture\b([^>]*)/?>', body):
                     attrs = tex_match.group(1)
-                    nm = re.search(r'\\bName="([^"]+)"', attrs)
-                    fm = re.search(r'\\bFormat="([^"]+)"', attrs)
+                    nm = re.search(r'\bName="([^"]+)"', attrs)
+                    fm = re.search(r'\bFormat="([^"]+)"', attrs)
                     if not nm or not fm:
                         continue
                     key, fmt = archive + "/" + nm.group(1), fm.group(1).lower()
