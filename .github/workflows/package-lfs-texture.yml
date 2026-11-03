@@ -1,5 +1,10 @@
 name: Build Quest texture pack directly from PackBuild
 
+# Keep large LFS-based pack builds serialized. A newer push supersedes an older run.
+concurrency:
+  group: texture-pack-build-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
   push:
