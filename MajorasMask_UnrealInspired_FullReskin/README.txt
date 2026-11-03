@@ -3,7 +3,7 @@ Majora's Mask VR - Unreal-inspired full visual reskin
 
 Installable pack
 ----------------
-MajorasMask_UnrealInspired_Environment.o2r is the ready-to-enable pack for this project's Majora's Mask VR native port. It contains overrides for all 13,542 exported texture resource keys, covering scenes, props, characters, item/UI art, text glyphs, and internal TLUT palette resources. Palette entries retain their original format and pixel data for compatibility. The pack does not include a ROM or the source O2R archive.
+The downloadable `texture-pack-v1-o2r` artifact produced by the GitHub Actions build is the final ready-to-enable pack for this project's Majora's Mask VR native port. It contains overrides for all 13,542 exported texture resource keys, covering scenes, props, characters, item/UI art, text glyphs, and internal TLUT palette resources. Palette entries retain their original format and pixel data for compatibility. The checked-in `MajorasMask_UnrealInspired_Environment.o2r` is the V0 resource/header template used by the builder; it is not the final V1 artifact. The pack does not include a ROM.
 
 Windows: put the .o2r in a `texturepacks` folder beside 2ship.exe. Open System > Mod library, refresh packs, enable this pack under Texture Packs, and restart the game.
 
