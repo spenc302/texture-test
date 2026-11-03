@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Build the final OTEX V1 O2R directly from PackBuild PNG assets.
 
-The checked-in O2R is used only as a resource/header template and as the
-byte-exact source for native RGBA16 palette resources. RGBA32 pixels are read
-from PackBuild PNGs and written directly into V1 resources; no intermediate
-V0 archive conversion is performed.
+RGBA32 replacements use the engine's LOAD_AS_IMG path, so the builder does
+not need to reconstruct each original N64 texture's pixel format or row pitch.
+The checked-in O2R supplies resource headers and byte-exact native palettes.
 """
 
 from __future__ import annotations
@@ -26,19 +25,7 @@ OTEX_MAGIC = 0x4F544558
 OTEX_HEADER_SIZE = 0x40
 V0_PIXEL_OFFSET = 0x50
 V1_PIXEL_OFFSET = 0x5C
-TEX_FLAG_LOAD_AS_RAW = 0x01
-BYTES_PER_PIXEL = {
-    "rgba32": 4.0,
-    "rgba16": 2.0,
-    "ci8": 1.0,
-    "ia8": 1.0,
-    "ia16": 2.0,
-    "i8": 1.0,
-    "ci4": 0.5,
-    "ia4": 0.5,
-    "i4": 0.5,
-    "yuv16": 2.0,
-}
+TEX_FLAG_LOAD_AS_IMG = 0x02
 PORT_VERSION = b"\x01\x00\x05\x00\x00\x00\x01"
 
 
@@ -78,193 +65,12 @@ def load_manifest(path: str | Path) -> list[dict[str, Any]]:
     return entries
 
 
-def load_original_formats(xml_root: str | Path) -> dict[str, str]:
-    """Index authoritative N64 texture formats by symbolic and OTR offset names."""
-    formats: dict[str, str] = {}
-
-    def add(key: str, fmt: str, source: str) -> None:
-        previous = formats.get(key)
-        if previous is not None and previous != fmt:
-            raise ValueError(f"Conflicting original formats for {key}: {previous} vs {fmt} ({source})")
-        formats[key] = fmt
-
-    for root, _, files in os.walk(xml_root):
-        for filename in files:
-            if not filename.lower().endswith(".xml"):
-                continue
-            path = os.path.join(root, filename)
-            with open(path, "r", encoding="utf-8-sig") as stream:
-                source = stream.read()
-            relative_root = Path(root).resolve().relative_to(Path(xml_root).resolve())
-            xml_group = relative_root.parts[0] if relative_root.parts else ""
-            for file_match in re.finditer(r'<File\b([^>]*)>(.*?)</File>', source, re.S):
-                file_attrs, body = file_match.group(1), file_match.group(2)
-                file_name_match = re.search(r'\bName="([^"]+)"', file_attrs)
-                out_name_match = re.search(r'\bOutName="([^"]+)"', file_attrs)
-                if not file_name_match:
-                    continue
-                file_name = file_name_match.group(1)
-                archive = out_name_match.group(1) if out_name_match else file_name
-                if archive.endswith(".unarchive"):
-                    archive = archive[:-len(".unarchive")]
-                if out_name_match:
-                    archive = file_name + "/" + archive
-                if xml_group in {"code", "misc", "objects", "overlays", "scenes", "rooms"} and not archive.startswith(xml_group + "/"):
-                    archive = xml_group + "/" + archive
-                for tex_match in re.finditer(r'<Texture\b([^>]*)/?>', body):
-                    attrs = tex_match.group(1)
-                    name_match = re.search(r'\bName="([^"]+)"', attrs)
-                    format_match = re.search(r'\bFormat="([^"]+)"', attrs)
-                    if not format_match:
-                        continue
-                    fmt = format_match.group(1).lower()
-                    if fmt not in BYTES_PER_PIXEL:
-                        continue
-                    if name_match:
-                        add(archive + "/" + name_match.group(1), fmt, path)
-                    offset_match = re.search(r'\bOffset="(0x[0-9A-Fa-f]+|[0-9]+)"', attrs)
-                    if offset_match:
-                        offset = int(offset_match.group(1), 0)
-                        suffix = f"{offset:06X}"
-                        for alias in (
-                            f"{file_name}_Tex_{suffix}",
-                            f"{file_name}Tex_{suffix}",
-                            f"{file_name}_TLUT_{suffix}",
-                            f"{file_name}TLUT_{suffix}",
-                        ):
-                            add(archive + "/" + alias, fmt, path)
-    # Some engine-owned code textures are declared in C rather than assets/XML.
-    # z_fbdemo_circle.c loads gCircleTex through the 4-bit texture-block macro
-    # with G_IM_FMT_I, so its original N64 format is I4.
-    circle_key = "code/fbdemo_circle/gCircleTex"
-    if circle_key not in formats:
-        formats[circle_key] = "i4"
-
-    if not formats:
-        raise ValueError(f"No texture format definitions found under {xml_root}")
-    return formats
-
-
-
-def _split_c_arguments(arguments: str) -> list[str]:
-    """Split a C macro argument list without splitting nested expressions."""
-    result: list[str] = []
-    start = 0
-    depth = 0
-    quote: str | None = None
-    escaped = False
-    for index, char in enumerate(arguments):
-        if quote:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == quote:
-                quote = None
-            continue
-        if char in {"'", '"'}:
-            quote = char
-        elif char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
-        elif char == "," and depth == 0:
-            result.append(arguments[start:index].strip())
-            start = index + 1
-    result.append(arguments[start:].strip())
-    return result
-
-
-def _c_texture_symbol(expression: str) -> str | None:
-    """Return the referenced asset symbol from a C texture-pointer expression."""
-    ignored = {
-        "const", "volatile", "u8", "s8", "u16", "s16", "u32", "s32",
-        "u64", "s64", "uintptr_t", "intptr_t", "void", "struct",
-    }
-    for token in re.findall(r"\b[A-Za-z_]\w*\b", expression):
-        if token not in ignored and not token.startswith("G_"):
-            if token.startswith(("g", "s", "object_", "scene_", "room_", "D_")):
-                return token
-    return None
-
-
-def load_c_texture_formats(xml_root: str | Path) -> tuple[dict[str, str], set[str]]:
-    """Read exact N64 formats from texture-load macros in decompiled C sources.
-
-    XML definitions do not cover every anonymous texture blob. Decompiled
-    display lists still specify the original G_IM_FMT and G_IM_SIZ explicitly.
-    """
-    decomp_root = Path(xml_root).resolve().parent.parent
-    source_root = decomp_root / "src"
-    if not source_root.is_dir():
-        return {}, set()
-
-    format_names = {
-        ("G_IM_FMT_RGBA", "G_IM_SIZ_16b"): "rgba16",
-        ("G_IM_FMT_RGBA", "G_IM_SIZ_32b"): "rgba32",
-        ("G_IM_FMT_YUV", "G_IM_SIZ_16b"): "yuv16",
-        ("G_IM_FMT_CI", "G_IM_SIZ_4b"): "ci4",
-        ("G_IM_FMT_CI", "G_IM_SIZ_8b"): "ci8",
-        ("G_IM_FMT_IA", "G_IM_SIZ_4b"): "ia4",
-        ("G_IM_FMT_IA", "G_IM_SIZ_8b"): "ia8",
-        ("G_IM_FMT_IA", "G_IM_SIZ_16b"): "ia16",
-        ("G_IM_FMT_I", "G_IM_SIZ_4b"): "i4",
-        ("G_IM_FMT_I", "G_IM_SIZ_8b"): "i8",
-    }
-    discovered: dict[str, str] = {}
-    ambiguous: set[str] = set()
-    call_pattern = re.compile(r"\b(gs|g)DPLoadTexture(Block|Tile)(_4b)?\s*\(")
-
-    for path in source_root.rglob("*.c"):
-        try:
-            source = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        source = re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.S)
-        for match in call_pattern.finditer(source):
-            depth = 1
-            cursor = match.end()
-            while cursor < len(source) and depth:
-                if source[cursor] == "(":
-                    depth += 1
-                elif source[cursor] == ")":
-                    depth -= 1
-                cursor += 1
-            if depth:
-                continue
-
-            args = _split_c_arguments(source[match.end():cursor - 1])
-            is_static = match.group(1) == "gs"
-            is_four_bit = match.group(3) == "_4b"
-            texture_index = 0 if is_static else 1
-            format_index = texture_index + 1
-            size_index = None if is_four_bit else format_index + 1
-            if len(args) <= format_index or (size_index is not None and len(args) <= size_index):
-                continue
-
-            fmt_name = args[format_index].strip()
-            size_name = "G_IM_SIZ_4b" if is_four_bit else args[size_index].strip()
-            pixel_format = format_names.get((fmt_name, size_name))
-            symbol = _c_texture_symbol(args[texture_index])
-            if pixel_format is None or symbol is None:
-                continue
-
-            previous = discovered.get(symbol)
-            if previous is not None and previous != pixel_format:
-                ambiguous.add(symbol)
-                discovered.pop(symbol, None)
-            elif symbol not in ambiguous:
-                discovered[symbol] = pixel_format
-
-    return discovered, ambiguous
-
 def make_v1_rgba32(
     resource: str,
     template: bytes,
     rgba_pixels: bytes,
     image_size: tuple[int, int],
     manifest_entry: dict[str, Any],
-    original_format: str,
 ) -> bytes:
     if len(template) < V0_PIXEL_OFFSET or struct.unpack_from("<I", template, 4)[0] != OTEX_MAGIC:
         raise ValueError(f"{resource}: template is not an OTEX resource")
@@ -290,14 +96,6 @@ def make_v1_rgba32(
     if len(template) != V0_PIXEL_OFFSET + data_size:
         raise ValueError(f"{resource}: malformed V0 template length {len(template)}")
 
-    native_width, native_height = manifest_entry["_original_size"]
-    if original_format not in BYTES_PER_PIXEL:
-        raise ValueError(f"{resource}: unsupported original N64 format {original_format!r}")
-    h_scale = (float(width) / native_width) * (4.0 / BYTES_PER_PIXEL[original_format])
-    v_scale = float(height) / native_height
-    if not math.isfinite(h_scale) or not math.isfinite(v_scale) or h_scale <= 0 or v_scale <= 0:
-        raise ValueError(f"{resource}: invalid RAW import scale {h_scale}x{v_scale}")
-
     header = bytearray(template[:OTEX_HEADER_SIZE])
     struct.pack_into("<I", header, 8, 1)
     body = struct.pack(
@@ -305,9 +103,9 @@ def make_v1_rgba32(
         texture_type,
         width,
         height,
-        TEX_FLAG_LOAD_AS_RAW,
-        h_scale,
-        v_scale,
+        TEX_FLAG_LOAD_AS_IMG,
+        1.0,
+        1.0,
         expected_size,
     )
     return bytes(header) + body + rgba_pixels
@@ -329,7 +127,6 @@ def build_archive(
     output_archive: str | Path,
     packbuild_root: str | Path,
     manifest_path: str | Path,
-    xml_root: str | Path,
 ) -> collections.Counter:
     source_archive = Path(source_archive)
     output_archive = Path(output_archive)
@@ -339,39 +136,11 @@ def build_archive(
 
     entries = load_manifest(manifest_path)
     manifest_by_resource = {entry["resource"]: entry for entry in entries}
-    formats = load_original_formats(xml_root)
     palette_entries = {
         key: value for key, value in manifest_by_resource.items()
         if value.get("styleMode") == "native-palette-preserve"
     }
     rgba_entries = {key: value for key, value in manifest_by_resource.items() if key not in palette_entries}
-
-    # The OTR exporter adds _Overflow to the resource key when a source
-    # texture crosses the source archive's logical boundary. It does not
-    # change the underlying texture definition; resolve against the base key.
-    # Anonymous texture blobs can be absent from XML, but their original
-    # G_IM_FMT/G_IM_SIZ is still explicit in decompiled display-list macros.
-    c_formats, ambiguous_c_formats = load_c_texture_formats(xml_root)
-    resolved_formats: dict[str, str] = {}
-    c_format_resolutions = 0
-    for resource in rgba_entries:
-        base_resource = resource[:-len("_Overflow")] if resource.endswith("_Overflow") else resource
-        if base_resource in formats:
-            resolved_formats[resource] = formats[base_resource]
-            continue
-        symbol = base_resource.rsplit("/", 1)[-1]
-        if symbol in ambiguous_c_formats:
-            raise ValueError(f"{resource}: conflicting C display-list formats for texture symbol {symbol}")
-        if symbol in c_formats:
-            resolved_formats[resource] = c_formats[symbol]
-            c_format_resolutions += 1
-
-    missing_formats = sorted(set(rgba_entries) - set(resolved_formats))
-    if missing_formats:
-        raise ValueError(
-            f"Missing original N64 formats for {len(missing_formats)} RGBA32 resources; "
-            f"examples: {missing_formats[:20]}"
-        )
 
     stats: collections.Counter = collections.Counter()
     if c_format_resolutions:
@@ -428,7 +197,7 @@ def build_archive(
                         image_size = image.size
                         rgba_pixels = image.convert("RGBA").tobytes()
                     converted = make_v1_rgba32(
-                        name, original, rgba_pixels, image_size, entry, resolved_formats[name]
+                        name, original, rgba_pixels, image_size, entry
                     )
                     stats["built-v1-rgba32-from-png"] += 1
 
@@ -457,8 +226,8 @@ def build_archive(
             data = check.read(name)
             if struct.unpack_from("<I", data, 8)[0] != 1:
                 raise RuntimeError(f"{name}: final resource is not OTEX V1")
-            if struct.unpack_from("<I", data, 0x4C)[0] != TEX_FLAG_LOAD_AS_RAW:
-                raise RuntimeError(f"{name}: final resource is not flagged LOAD_AS_RAW")
+            if struct.unpack_from("<I", data, 0x4C)[0] != TEX_FLAG_LOAD_AS_IMG:
+                raise RuntimeError(f"{name}: final resource is not flagged LOAD_AS_IMG")
     return stats
 
 
@@ -477,13 +246,9 @@ def main() -> None:
         "--manifest", default=str(pack_root / "Overrides_Manifest.json"),
         help="texture manifest",
     )
-    parser.add_argument(
-        "--decomp-assets", required=True,
-        help="zeldaret/mm assets/xml directory with authoritative original texture formats",
-    )
     args = parser.parse_args()
 
-    stats = build_archive(args.source_o2r, args.output, args.packbuild, args.manifest, args.decomp_assets)
+    stats = build_archive(args.source_o2r, args.output, args.packbuild, args.manifest)
     print("Direct PackBuild -> OTEX V1 O2R build complete:")
     for name in sorted(stats):
         print(f"  {name}: {stats[name]}")

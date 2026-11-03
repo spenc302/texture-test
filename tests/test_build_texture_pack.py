@@ -10,9 +10,8 @@ from PIL import Image
 from tools.build_texture_pack import (
     OTEX_MAGIC,
     PORT_VERSION,
-    TEX_FLAG_LOAD_AS_RAW,
+    TEX_FLAG_LOAD_AS_IMG,
     build_archive,
-    load_original_formats,
 )
 
 
@@ -31,8 +30,6 @@ class DirectPackBuildTests(unittest.TestCase):
             root = Path(temp)
             packbuild = root / "PackBuild"
             packbuild.mkdir()
-            xml_objects = root / "xml" / "objects"
-            xml_objects.mkdir(parents=True)
 
             image_path = packbuild / "objects/test/sample.rgba32.png"
             image_path.parent.mkdir(parents=True)
@@ -46,11 +43,6 @@ class DirectPackBuildTests(unittest.TestCase):
 
             palette_path = packbuild / "objects/test/palette.rgb5a1.png"
             Image.new("RGBA", (2, 2), (12, 34, 56, 255)).save(palette_path)
-
-            (xml_objects / "test.xml").write_text(
-                '<File Name="test"><Texture Name="sample" Format="ci8"/></File>',
-                encoding="utf-8",
-            )
 
             image_template = make_v0(1, 4, 2, bytes(4 * 2 * 4))
             # Deliberately include trailing native palette padding. It must
@@ -83,7 +75,7 @@ class DirectPackBuildTests(unittest.TestCase):
                 ]
             }), encoding="utf-8")
 
-            stats = build_archive(source, output, packbuild, manifest, root / "xml")
+            stats = build_archive(source, output, packbuild, manifest)
             self.assertEqual(stats["built-v1-rgba32-from-png"], 1)
             self.assertEqual(stats["preserved-native-palette"], 1)
 
@@ -98,125 +90,18 @@ class DirectPackBuildTests(unittest.TestCase):
                 h_scale, v_scale = struct.unpack_from("<ff", result, 0x50)
                 data_size = struct.unpack_from("<I", result, 0x58)[0]
                 self.assertEqual((texture_type, width, height), (1, 4, 2))
-                self.assertEqual(flags, TEX_FLAG_LOAD_AS_RAW)
-                self.assertAlmostEqual(h_scale, 8.0)
+                self.assertEqual(flags, TEX_FLAG_LOAD_AS_IMG)
+                self.assertAlmostEqual(h_scale, 1.0)
                 self.assertAlmostEqual(v_scale, 1.0)
                 self.assertEqual(data_size, 32)
                 self.assertEqual(result[0x5C:], rgba)
 
 
-    def test_indexes_overlay_group_and_resolves_overflow_alias(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            overlays = root / "overlays"
-            overlays.mkdir()
-            (overlays / "ovl_Arrow_Fire.xml").write_text(
-                '<File Name="ovl_Arrow_Fire">'
-                '<Texture Name="gFireArrowTex" Format="i8" Offset="0xAB0"/>'
-                '</File>',
-                encoding="utf-8",
-            )
-            formats = load_original_formats(root)
-            self.assertEqual(formats["overlays/ovl_Arrow_Fire/gFireArrowTex"], "i8")
-            resource = "overlays/ovl_Arrow_Fire/gFireArrowTex_Overflow"
-            base = resource[:-len("_Overflow")]
-            self.assertEqual(formats[base], "i8")
-
-    def test_resolves_missing_xml_format_from_c_display_list(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            decomp = root / "decomp"
-            xml_objects = decomp / "assets" / "xml" / "objects"
-            source_code = decomp / "src" / "code"
-            packbuild = root / "PackBuild"
-            xml_objects.mkdir(parents=True)
-            source_code.mkdir(parents=True)
-            packbuild.mkdir()
-
-            # The target is an anonymous offset texture. Its format is only
-            # explicit in the decompiled display-list macro, not the XML.
-            (xml_objects / "test.xml").write_text(
-                '<File Name="test"><Texture Name="known" Format="rgba16"/></File>',
-                encoding="utf-8",
-            )
-            (source_code / "z_test.c").write_text(
-                'Gfx testDL[] = { '
-                'gsDPLoadTextureBlock(object_test_Tex_000010, G_IM_FMT_IA, '
-                'G_IM_SIZ_8b, 4, 4, 0, G_TX_NOMIRROR, G_TX_NOMIRROR, '
-                'G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD) '
-                '};',
-                encoding="utf-8",
-            )
-
-            asset = packbuild / "objects/test/texture.rgba32.png"
-            asset.parent.mkdir(parents=True)
-            Image.new("RGBA", (4, 4), (20, 40, 60, 255)).save(asset)
-            source = root / "source.o2r"
-            output = root / "output.o2r"
-            with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_STORED) as archive:
-                archive.writestr("portVersion", PORT_VERSION)
-                archive.writestr(
-                    "objects/test/object_test_Tex_000010",
-                    make_v0(1, 4, 4, bytes(4 * 4 * 4)),
-                )
-
-            manifest = root / "manifest.json"
-            manifest.write_text(json.dumps({"entries": [{
-                "resource": "objects/test/object_test_Tex_000010",
-                "asset": "objects/test/texture.rgba32.png",
-                "originalSize": [2, 2],
-                "overrideSize": [4, 4],
-                "styleMode": "material-blend",
-            }]}), encoding="utf-8")
-
-            stats = build_archive(
-                source, output, packbuild, manifest, decomp / "assets" / "xml"
-            )
-            self.assertEqual(stats["formats-resolved-from-c-source"], 1)
-            with zipfile.ZipFile(output) as built:
-                result = built.read("objects/test/object_test_Tex_000010")
-                h_scale, v_scale = struct.unpack_from("<ff", result, 0x50)
-                self.assertAlmostEqual(h_scale, 8.0)  # IA8 = one byte per texel
-                self.assertAlmostEqual(v_scale, 2.0)
-
-    def test_indexes_scene_and_room_groups_from_nested_xml_directories(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            scenes = root / "xml" / "scenes" / "overworld"
-            rooms = root / "xml" / "rooms" / "dungeon"
-            scenes.mkdir(parents=True)
-            rooms.mkdir(parents=True)
-            (scenes / "spot01.xml").write_text(
-                '<File Name="spot01_scene">'
-                '<Texture Name="gSpot01GrassTex" Format="rgba16" Offset="0xAA50"/>'
-                '</File>',
-                encoding="utf-8",
-            )
-            (rooms / "spot01_room_0.xml").write_text(
-                '<File Name="spot01_room_0">'
-                '<Texture Name="gSpot01RoomTex" Format="ia8" Offset="0x120"/>'
-                '</File>',
-                encoding="utf-8",
-            )
-
-            formats = load_original_formats(root / "xml")
-            self.assertEqual(
-                formats["scenes/spot01_scene/gSpot01GrassTex"], "rgba16"
-            )
-            self.assertEqual(
-                formats["rooms/spot01_room_0/gSpot01RoomTex"], "ia8"
-            )
-
     def test_rejects_manifest_archive_dimension_mismatch(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "PackBuild" / "objects/test").mkdir(parents=True)
-            (root / "xml" / "objects").mkdir(parents=True)
             Image.new("RGBA", (4, 2)).save(root / "PackBuild/objects/test/sample.rgba32.png")
-            (root / "xml/objects/test.xml").write_text(
-                '<File Name="test"><Texture Name="sample" Format="ci8"/></File>',
-                encoding="utf-8",
-            )
             source = root / "source.o2r"
             with zipfile.ZipFile(source, "w") as archive:
                 archive.writestr("portVersion", PORT_VERSION)
@@ -229,7 +114,7 @@ class DirectPackBuildTests(unittest.TestCase):
                 "overrideSize": [4, 2],
             }]}), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "template dimensions"):
-                build_archive(source, root / "output.o2r", root / "PackBuild", manifest, root / "xml")
+                build_archive(source, root / "output.o2r", root / "PackBuild", manifest)
 
 
 if __name__ == "__main__":

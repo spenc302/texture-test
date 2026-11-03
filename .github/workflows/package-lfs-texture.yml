@@ -30,13 +30,6 @@ jobs:
         with:
           lfs: true
 
-      - name: Check out authoritative N64 texture format definitions
-        uses: actions/checkout@v4
-        with:
-          repository: zeldaret/mm
-          ref: 710e1a7d50a1f987f5fc55abca37f7fdcc8ee43d
-          path: mm-decomp
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -67,7 +60,6 @@ jobs:
             --source-o2r MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r \
             --packbuild MajorasMask_UnrealInspired_FullReskin/PackBuild \
             --manifest MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json \
-            --decomp-assets mm-decomp/assets/xml \
             --output texture-pack-v1.o2r
 
       - name: Verify final O2R archive

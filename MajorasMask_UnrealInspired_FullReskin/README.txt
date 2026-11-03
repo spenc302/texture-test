@@ -30,12 +30,13 @@ Build pipeline
 --------------
 The final Quest O2R is built directly from the generated PackBuild PNGs by
 `tools/build_texture_pack.py`. It does not run the old archive-wide V0-to-V1
-conversion pass. For each RGBA32 replacement, the builder reads the PNG pixels,
-uses the matching V0 archive entry only as the OTEX header/resource template,
-looks up the original N64 texture format in the pinned zeldaret/mm XML assets,
-and writes the final OTEX V1 RAW-import header and pixels in one build step.
-The HByteScale and VPixelScale values are calculated from the original N64
-format and the original/replacement dimensions.
+conversion pass. For each RGBA32 replacement, the builder reads the PNG pixels and writes
+an OTEX V1 RGBA32 resource using the engine's `TEX_FLAG_LOAD_AS_IMG` path.
+This is the image-upload mode used by a separately tested 2Ship texture-pack
+implementation: it uploads the complete replacement image and does not need
+the original N64 format, row pitch, or inferred HByteScale. The V1 scale
+fields are set to 1.0. This avoids guessing formats for anonymous scene,
+room, and overlay resources.
 
 The 855 entries marked `native-palette-preserve` are not regenerated from their
 RGB5A1 PNG inspection assets. Their original archive resources, including any
