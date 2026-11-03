@@ -26,12 +26,14 @@ import math
 import os
 import struct
 import zipfile
+import re
 
 OTEX_MAGIC = 0x4F544558
 OTEX_HEADER_SIZE = 0x40
 V0_PIXEL_OFFSET = 0x50
 V1_PIXEL_OFFSET = 0x5C
 TEX_FLAG_LOAD_AS_RAW = 0x01
+BYTES_PER_PIXEL = {"rgba32": 4.0, "rgba16": 2.0, "ci8": 1.0, "ia8": 1.0, "i8": 1.0, "ci4": 0.5, "ia4": 0.5, "i4": 0.5, "yuv16": 2.0}
 
 
 def load_override_manifest(path: str) -> dict[str, tuple[int, int, int, int]]:
@@ -65,7 +67,34 @@ def load_override_manifest(path: str) -> dict[str, tuple[int, int, int, int]]:
     return overrides
 
 
-def convert_entry(name: str, data: bytes, overrides: dict[str, tuple[int, int, int, int]]) -> tuple[bytes, str]:
+
+def load_original_formats(xml_root: str) -> dict[str, str]:
+    """Read original N64 texture formats from zeldaret/mm asset XML."""
+    formats: dict[str, str] = {}
+    for root, _, files in os.walk(xml_root):
+        for filename in files:
+            if not filename.lower().endswith(".xml"):
+                continue
+            path = os.path.join(root, filename)
+            with open(path, "r", encoding="utf-8-sig") as fh:
+                source = fh.read()
+            for file_match in re.finditer(r'<File\\b[^>]*\\bName="([^"]+)"[^>]*>(.*?)</File>', source, re.S):
+                archive, body = file_match.group(1), file_match.group(2)
+                for tex_match in re.finditer(r'<Texture\\b([^>]*)/?>', body):
+                    attrs = tex_match.group(1)
+                    nm = re.search(r'\\bName="([^"]+)"', attrs)
+                    fm = re.search(r'\\bFormat="([^"]+)"', attrs)
+                    if not nm or not fm:
+                        continue
+                    key, fmt = archive + "/" + nm.group(1), fm.group(1).lower()
+                    if key in formats and formats[key] != fmt:
+                        raise ValueError(f"Conflicting original formats for {key}: {formats[key]} vs {fmt}")
+                    formats[key] = fmt
+    if not formats:
+        raise ValueError(f"No texture format definitions found under {xml_root}")
+    return formats
+
+def convert_entry(name: str, data: bytes, overrides: dict[str, tuple[int, int, int, int]], original_formats: dict[str, str]) -> tuple[bytes, str]:
     """Return (resource bytes, conversion status)."""
     if name == "portVersion":
         return data, "port-marker"
@@ -100,7 +129,11 @@ def convert_entry(name: str, data: bytes, overrides: dict[str, tuple[int, int, i
             f"{name}: archive dimensions {width}x{height} do not match manifest "
             f"overrideSize {replacement_width}x{replacement_height}"
         )
-    h_scale = float(replacement_width) / float(native_width)
+    original_format = original_formats.get(name)
+    if original_format not in BYTES_PER_PIXEL:
+        raise ValueError(f"{name}: missing/unsupported original N64 texture format {original_format!r}")
+    # RAW import scales original N64 row bytes into RGBA32 replacement row bytes.
+    h_scale = (float(replacement_width) / float(native_width)) * (4.0 / BYTES_PER_PIXEL[original_format])
     v_scale = float(replacement_height) / float(native_height)
     if not math.isfinite(h_scale) or not math.isfinite(v_scale) or h_scale <= 0 or v_scale <= 0:
         raise ValueError(f"{name}: invalid scale factors {h_scale}x{v_scale}")
@@ -135,11 +168,15 @@ def convert_entry(name: str, data: bytes, overrides: dict[str, tuple[int, int, i
     return bytes(header) + v1_fields + pixels, "upgraded-rgba32"
 
 
-def convert_archive(source_path: str, output_path: str, manifest_path: str) -> collections.Counter:
+def convert_archive(source_path: str, output_path: str, manifest_path: str, xml_root: str) -> collections.Counter:
     if os.path.abspath(source_path) == os.path.abspath(output_path):
         raise ValueError("Input and output paths must be different")
 
     overrides = load_override_manifest(manifest_path)
+    original_formats = load_original_formats(xml_root)
+    missing_formats = sorted(set(overrides) - set(original_formats))
+    if missing_formats:
+        raise ValueError(f"Missing original N64 formats for {len(missing_formats)} manifest resources; examples: {missing_formats[:20]}")
     stats: collections.Counter = collections.Counter()
     with zipfile.ZipFile(source_path, "r") as source:
         source_names = source.namelist()
@@ -148,7 +185,7 @@ def convert_archive(source_path: str, output_path: str, manifest_path: str) -> c
             output.comment = source_comment
             for info in source.infolist():
                 original = source.read(info.filename)  # also validates source CRC
-                converted, status = convert_entry(info.filename, original, overrides)
+                converted, status = convert_entry(info.filename, original, overrides, original_formats)
                 stats[status] += 1
 
                 # Keep the resource names and timestamps. Store entries rather
@@ -189,7 +226,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    stats = convert_archive(args.input, args.output, args.manifest)
+    stats = convert_archive(args.input, args.output, args.manifest, args.decomp_assets)
     print("OTEX conversion complete:")
     for name in sorted(stats):
         print(f"  {name}: {stats[name]}")
