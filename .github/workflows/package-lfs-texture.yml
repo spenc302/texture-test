@@ -38,7 +38,8 @@ jobs:
         run: |
           python tools/upgrade_otex_v0_to_v1.py \
             MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r \
-            texture-pack-v1.o2r
+            texture-pack-v1.o2r \
+            --manifest MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json
 
       - name: Verify converted O2R archive
         shell: bash
