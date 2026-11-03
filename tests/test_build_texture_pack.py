@@ -122,6 +122,22 @@ class DirectPackBuildTests(unittest.TestCase):
             base = resource[:-len("_Overflow")]
             self.assertEqual(formats[base], "i8")
 
+    def test_indexes_texture_outname_as_exported_resource_key(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            objects = root / "objects"
+            objects.mkdir()
+            (objects / "test.xml").write_text(
+                '<File Name="test">'
+                '<Texture Name="gTextureSymbol" OutName="exported_texture" '
+                'Format="ia4" Offset="0x20"/>'
+                '</File>',
+                encoding="utf-8",
+            )
+            formats = load_original_formats(root)
+            self.assertEqual(formats["objects/test/gTextureSymbol"], "ia4")
+            self.assertEqual(formats["objects/test/exported_texture"], "ia4")
+
     def test_rejects_manifest_archive_dimension_mismatch(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
