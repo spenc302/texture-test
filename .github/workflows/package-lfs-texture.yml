@@ -1,11 +1,15 @@
-name: Build converted Quest texture pack
+name: Build Quest texture pack directly from PackBuild
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - 'tools/upgrade_otex_v0_to_v1.py'
+      - 'tools/build_texture_pack.py'
+      - 'tests/test_build_texture_pack.py'
+      - 'MajorasMask_UnrealInspired_FullReskin/PackBuild/**'
+      - 'MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json'
+      - 'MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r'
       - '.github/workflows/package-lfs-texture.yml'
 
 permissions:
@@ -14,7 +18,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Check out repository and Git LFS files
         uses: actions/checkout@v4
@@ -33,7 +37,13 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Verify source O2R was downloaded from Git LFS
+      - name: Install PNG decoder
+        run: python -m pip install --disable-pip-version-check Pillow
+
+      - name: Run direct-builder regression tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Verify source O2R template was downloaded from Git LFS
         shell: bash
         run: |
           SOURCE="MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r"
@@ -46,15 +56,16 @@ jobs:
           fi
           python -m zipfile -t "$SOURCE"
 
-      - name: Convert OTEX V0 RGBA32 resources to V1
+      - name: Build final OTEX V1 O2R directly from PackBuild PNGs
         run: |
-          python tools/upgrade_otex_v0_to_v1.py \
-            MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r \
-            texture-pack-v1.o2r \
+          python tools/build_texture_pack.py \
+            --source-o2r MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r \
+            --packbuild MajorasMask_UnrealInspired_FullReskin/PackBuild \
             --manifest MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json \
-            --decomp-assets mm-decomp/assets/xml
+            --decomp-assets mm-decomp/assets/xml \
+            --output texture-pack-v1.o2r
 
-      - name: Verify converted O2R archive
+      - name: Verify final O2R archive
         shell: bash
         run: |
           test -s texture-pack-v1.o2r
@@ -62,7 +73,7 @@ jobs:
           ls -lh texture-pack-v1.o2r
           sha256sum texture-pack-v1.o2r
 
-      - name: Publish converted O2R as a downloadable artifact
+      - name: Publish final O2R as a downloadable artifact
         uses: actions/upload-artifact@v4
         with:
           name: texture-pack-v1-o2r
