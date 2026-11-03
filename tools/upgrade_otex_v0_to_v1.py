@@ -224,6 +224,11 @@ def main() -> None:
                              "MajorasMask_UnrealInspired_FullReskin", "Overrides_Manifest.json"),
         help="override manifest containing originalSize and overrideSize (default: repository manifest)",
     )
+    parser.add_argument(
+        "--decomp-assets",
+        required=True,
+        help="path to zeldaret/mm assets/xml containing authoritative original texture formats",
+    )
     args = parser.parse_args()
 
     stats = convert_archive(args.input, args.output, args.manifest, args.decomp_assets)
