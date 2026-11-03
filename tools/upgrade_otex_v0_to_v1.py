@@ -78,8 +78,19 @@ def load_original_formats(xml_root: str) -> dict[str, str]:
             path = os.path.join(root, filename)
             with open(path, "r", encoding="utf-8-sig") as fh:
                 source = fh.read()
-            for file_match in re.finditer(r'<File\b[^>]*\bName="([^"]+)"[^>]*>(.*?)</File>', source, re.S):
-                archive, body = file_match.group(1), file_match.group(2)
+            for file_match in re.finditer(r'<File\b([^>]*)>(.*?)</File>', source, re.S):
+                file_attrs, body = file_match.group(1), file_match.group(2)
+                file_name_match = re.search(r'\bName="([^"]+)"', file_attrs)
+                out_name_match = re.search(r'\bOutName="([^"]+)"', file_attrs)
+                if not file_name_match:
+                    continue
+                # "code" + OutName="circle_tex" maps to code/circle_tex.
+                # "foo.unarchive" maps to the extracted archive name "foo".
+                archive = out_name_match.group(1) if out_name_match else file_name_match.group(1)
+                if archive.endswith(".unarchive"):
+                    archive = archive[:-len(".unarchive")]
+                if out_name_match:
+                    archive = file_name_match.group(1) + "/" + archive
                 for tex_match in re.finditer(r'<Texture\b([^>]*)/?>', body):
                     attrs = tex_match.group(1)
                     nm = re.search(r'\bName="([^"]+)"', attrs)
