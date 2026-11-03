@@ -2,6 +2,11 @@ name: Build converted Quest texture pack
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/upgrade_otex_v0_to_v1.py'
+      - '.github/workflows/package-lfs-texture.yml'
 
 permissions:
   contents: read
@@ -15,6 +20,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           lfs: true
+
+      - name: Check out authoritative N64 texture format definitions
+        uses: actions/checkout@v4
+        with:
+          repository: zeldaret/mm
+          ref: 710e1a7d50a1f987f5fc55abca37f7fdcc8ee43d
+          path: mm-decomp
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,7 +51,8 @@ jobs:
           python tools/upgrade_otex_v0_to_v1.py \
             MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r \
             texture-pack-v1.o2r \
-            --manifest MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json
+            --manifest MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json \
+            --decomp-assets mm-decomp/assets/xml
 
       - name: Verify converted O2R archive
         shell: bash
