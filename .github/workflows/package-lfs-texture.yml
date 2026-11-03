@@ -1,4 +1,4 @@
-name: Package texture-test LFS asset
+name: Build converted Quest texture pack
 
 on:
   workflow_dispatch:
@@ -7,38 +7,52 @@ permissions:
   contents: read
 
 jobs:
-  package:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out repository and Git LFS files
         uses: actions/checkout@v4
         with:
           lfs: true
 
-      - name: Verify the real texture pack was downloaded
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Verify source O2R was downloaded from Git LFS
         shell: bash
         run: |
-          FILE="MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r"
-          test -f "$FILE"
-          SIZE=$(stat -c%s "$FILE")
-          echo "Downloaded file size: $SIZE bytes"
+          SOURCE="MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r"
+          test -f "$SOURCE"
+          SIZE=$(stat -c%s "$SOURCE")
+          echo "Source O2R size: $SIZE bytes"
           if [ "$SIZE" -lt 100000000 ]; then
-            echo "::error::File is too small; Git LFS pointer may have been downloaded instead."
+            echo "::error::Source is too small; Git LFS pointer may have been checked out instead."
             exit 1
           fi
+          python -m zipfile -t "$SOURCE"
 
-      - name: Package texture pack as ZIP
+      - name: Convert OTEX V0 RGBA32 resources to V1
+        run: |
+          python tools/upgrade_otex_v0_to_v1.py \
+            MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r \
+            texture-pack-v1.o2r
+
+      - name: Verify converted O2R archive
         shell: bash
         run: |
-          FILE="MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r"
-          zip -0 -j texture-pack.zip "$FILE"
-          ls -lh texture-pack.zip
+          test -s texture-pack-v1.o2r
+          python -m zipfile -t texture-pack-v1.o2r
+          ls -lh texture-pack-v1.o2r
+          sha256sum texture-pack-v1.o2r
 
-      - name: Upload ZIP artifact
+      - name: Publish converted O2R as a downloadable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: texture-pack-zip
-          path: texture-pack.zip
+          name: texture-pack-v1-o2r
+          path: texture-pack-v1.o2r
           if-no-files-found: error
-          retention-days: 3
+          compression-level: 0
+          retention-days: 14
