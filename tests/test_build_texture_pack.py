@@ -15,6 +15,7 @@ from tools.build_texture_pack import (
     load_original_formats,
     load_port_texture_formats,
     resolve_original_formats,
+    encode_rgb5a1_png,
 )
 
 
@@ -86,12 +87,14 @@ class DirectPackBuildTests(unittest.TestCase):
             Image.frombytes("RGBA", (4, 2), rgba).save(image_path)
 
             palette_path = packbuild / "objects/test/palette.rgb5a1.png"
-            Image.new("RGBA", (2, 2), (12, 34, 56, 255)).save(palette_path)
+            palette_image = Image.new("RGBA", (2, 2), (12, 34, 56, 255))
+            palette_image.save(palette_path)
+            palette_pixels = encode_rgb5a1_png(palette_path, (2, 2))
 
             image_template = make_v0(1, 4, 2, bytes(4 * 2 * 4))
             # Deliberately include trailing native palette padding. It must
-            # survive byte-for-byte rather than being regenerated from PNG.
-            palette_template = make_v0(2, 2, 2, b"\x11" * 8, b"\xAA\xBB\xCC\xDD")
+            # survive byte-for-byte after the PNG has been verified.
+            palette_template = make_v0(2, 2, 2, palette_pixels, b"\xAA\xBB\xCC\xDD")
             source = root / "source.o2r"
             output = root / "output.o2r"
             with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_STORED) as archive:
@@ -142,6 +145,14 @@ class DirectPackBuildTests(unittest.TestCase):
                 self.assertEqual(data_size, 32)
                 self.assertEqual(result[0x5C:], rgba)
 
+
+    def test_rgb5a1_png_round_trips_to_big_endian_n64_palette_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "palette.rgb5a1.png"
+            Image.new("RGBA", (2, 1), (248, 128, 24, 255)).save(path)
+            encoded = encode_rgb5a1_png(path, (2, 1))
+            word = ((31 << 11) | (16 << 6) | (3 << 1) | 1)
+            self.assertEqual(encoded, bytes((word >> 8, word & 0xFF)) * 2)
 
     def test_overlay_xml_uses_full_overlays_resource_prefix(self):
         with tempfile.TemporaryDirectory() as temp:
