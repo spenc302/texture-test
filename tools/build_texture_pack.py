@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the final OTEX V1 O2R directly from PackBuild PNG assets.
 
-RGBA32 replacements use the engine's LOAD_AS_IMG path, so the builder does
+RGBA32 replacements use the engine's LOAD_AS_RAW path, so the builder does
 not need to reconstruct each original N64 texture's pixel format or row pitch.
 The checked-in O2R supplies resource headers and byte-exact native palettes.
 """
@@ -25,7 +25,8 @@ OTEX_MAGIC = 0x4F544558
 OTEX_HEADER_SIZE = 0x40
 V0_PIXEL_OFFSET = 0x50
 V1_PIXEL_OFFSET = 0x5C
-TEX_FLAG_LOAD_AS_IMG = 0x02
+TEX_FLAG_LOAD_AS_RAW = 0x01
+BYTES_PER_PIXEL = {"rgba32": 4.0, "rgba16": 2.0, "ci8": 1.0, "ia8": 1.0, "ia16": 2.0, "i8": 1.0, "ci4": 0.5, "ia4": 0.5, "i4": 0.5, "yuv16": 2.0}
 PORT_VERSION = b"\x01\x00\x05\x00\x00\x00\x01"
 
 
@@ -65,12 +66,64 @@ def load_manifest(path: str | Path) -> list[dict[str, Any]]:
     return entries
 
 
+
+def load_original_formats(xml_root: str | Path) -> dict[str, str]:
+    """Index original N64 formats by symbolic and offset-based OTR resource names."""
+    formats: dict[str, str] = {}
+    def add(key: str, fmt: str, source: str) -> None:
+        previous = formats.get(key)
+        if previous is not None and previous != fmt:
+            raise ValueError(f"Conflicting original formats for {key}: {previous} vs {fmt} ({source})")
+        formats[key] = fmt
+    root = Path(xml_root)
+    if not root.is_dir():
+        raise FileNotFoundError(f"Decomp XML directory does not exist: {root}")
+    for path in root.rglob("*.xml"):
+        source = path.read_text(encoding="utf-8-sig")
+        group = path.parent.name
+        for fm in re.finditer(r'<File\b([^>]*)>(.*?)</File>', source, re.S):
+            attrs, body = fm.group(1), fm.group(2)
+            nm = re.search(r'\bName="([^"]+)"', attrs)
+            out = re.search(r'\bOutName="([^"]+)"', attrs)
+            if not nm:
+                continue
+            file_name = nm.group(1)
+            archive = out.group(1) if out else file_name
+            if archive.endswith(".unarchive"):
+                archive = archive[:-10]
+            if out:
+                archive = file_name + "/" + archive
+            if group in {"code", "misc", "objects"} and not archive.startswith(group + "/"):
+                archive = group + "/" + archive
+            for tm in re.finditer(r'<Texture\b([^>]*)/?>', body):
+                ta = tm.group(1)
+                tn = re.search(r'\bName="([^"]+)"', ta)
+                tf = re.search(r'\bFormat="([^"]+)"', ta)
+                if not tf:
+                    continue
+                fmt = tf.group(1).lower()
+                if fmt not in BYTES_PER_PIXEL:
+                    continue
+                if tn:
+                    add(archive + "/" + tn.group(1), fmt, str(path))
+                off = re.search(r'\bOffset="(0x[0-9A-Fa-f]+|[0-9]+)"', ta)
+                if off:
+                    suffix = f"{int(off.group(1), 0):06X}"
+                    for alias in (f"{file_name}_Tex_{suffix}", f"{file_name}Tex_{suffix}",
+                                  f"{file_name}_TLUT_{suffix}", f"{file_name}TLUT_{suffix}"):
+                        add(archive + "/" + alias, fmt, str(path))
+    if not formats:
+        raise ValueError(f"No texture format definitions found under {root}")
+    return formats
+
+
 def make_v1_rgba32(
     resource: str,
     template: bytes,
     rgba_pixels: bytes,
     image_size: tuple[int, int],
     manifest_entry: dict[str, Any],
+    original_formats: dict[str, str],
 ) -> bytes:
     if len(template) < V0_PIXEL_OFFSET or struct.unpack_from("<I", template, 4)[0] != OTEX_MAGIC:
         raise ValueError(f"{resource}: template is not an OTEX resource")
@@ -96,6 +149,14 @@ def make_v1_rgba32(
     if len(template) != V0_PIXEL_OFFSET + data_size:
         raise ValueError(f"{resource}: malformed V0 template length {len(template)}")
 
+    original_format = original_formats.get(resource)
+    if original_format not in BYTES_PER_PIXEL:
+        raise ValueError(f"{resource}: missing/unsupported original N64 texture format {original_format!r}")
+    native_width, native_height = manifest_entry["_original_size"]
+    h_scale = (float(width) / float(native_width)) * (4.0 / BYTES_PER_PIXEL[original_format])
+    v_scale = float(height) / float(native_height)
+    if not math.isfinite(h_scale) or not math.isfinite(v_scale) or h_scale <= 0 or v_scale <= 0:
+        raise ValueError(f"{resource}: invalid raw-import scale {h_scale}x{v_scale}")
     header = bytearray(template[:OTEX_HEADER_SIZE])
     struct.pack_into("<I", header, 8, 1)
     body = struct.pack(
@@ -103,9 +164,9 @@ def make_v1_rgba32(
         texture_type,
         width,
         height,
-        TEX_FLAG_LOAD_AS_IMG,
-        1.0,
-        1.0,
+        TEX_FLAG_LOAD_AS_RAW,
+        h_scale,
+        v_scale,
         expected_size,
     )
     return bytes(header) + body + rgba_pixels
@@ -127,6 +188,7 @@ def build_archive(
     output_archive: str | Path,
     packbuild_root: str | Path,
     manifest_path: str | Path,
+    decomp_assets_root: str | Path,
 ) -> collections.Counter:
     source_archive = Path(source_archive)
     output_archive = Path(output_archive)
@@ -135,6 +197,7 @@ def build_archive(
         raise ValueError("Input and output archives must be different")
 
     entries = load_manifest(manifest_path)
+    original_formats = load_original_formats(decomp_assets_root)
     manifest_by_resource = {entry["resource"]: entry for entry in entries}
     palette_entries = {
         key: value for key, value in manifest_by_resource.items()
@@ -195,7 +258,7 @@ def build_archive(
                         image_size = image.size
                         rgba_pixels = image.convert("RGBA").tobytes()
                     converted = make_v1_rgba32(
-                        name, original, rgba_pixels, image_size, entry
+                        name, original, rgba_pixels, image_size, entry, original_formats
                     )
                     stats["built-v1-rgba32-from-png"] += 1
 
@@ -224,8 +287,8 @@ def build_archive(
             data = check.read(name)
             if struct.unpack_from("<I", data, 8)[0] != 1:
                 raise RuntimeError(f"{name}: final resource is not OTEX V1")
-            if struct.unpack_from("<I", data, 0x4C)[0] != TEX_FLAG_LOAD_AS_IMG:
-                raise RuntimeError(f"{name}: final resource is not flagged LOAD_AS_IMG")
+            if struct.unpack_from("<I", data, 0x4C)[0] != TEX_FLAG_LOAD_AS_RAW:
+                raise RuntimeError(f"{name}: final resource is not flagged LOAD_AS_RAW")
     return stats
 
 
@@ -239,6 +302,7 @@ def main() -> None:
         help="V0 O2R resource/header template (default: checked-in LFS archive)",
     )
     parser.add_argument("--output", default="texture-pack-v1.o2r", help="final O2R output path")
+    parser.add_argument("--decomp-assets", required=True, help="zeldaret/mm assets/xml directory")
     parser.add_argument("--packbuild", default=str(pack_root / "PackBuild"), help="PackBuild PNG root")
     parser.add_argument(
         "--manifest", default=str(pack_root / "Overrides_Manifest.json"),
@@ -246,8 +310,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    stats = build_archive(args.source_o2r, args.output, args.packbuild, args.manifest)
-    print("Direct PackBuild -> OTEX V1 O2R build complete:")
+    stats = build_archive(args.source_o2r, args.output, args.packbuild, args.manifest, args.decomp_assets)
+    print("PackBuild -> OTEX V1 LOAD_AS_RAW O2R build complete:")
     for name in sorted(stats):
         print(f"  {name}: {stats[name]}")
     print(f"Output size: {os.path.getsize(args.output):,} bytes")
