@@ -78,7 +78,7 @@ def _resource_archive_name(file_name: str, out_name: str | None, group: str) -> 
         archive = archive[:-10]
     if out_name:
         archive = file_name + "/" + archive
-    if group in {"code", "misc", "objects"} and not archive.startswith(group + "/"):
+    if group in {"code", "misc", "objects", "overlays", "scenes"} and not archive.startswith(group + "/"):
         archive = group + "/" + archive
     return archive
 
@@ -162,9 +162,19 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
 
 
 def original_format_for(resource: str, formats: dict[str, str]) -> str | None:
-    if resource in formats:
-        return formats[resource]
-    return formats.get(resource.rsplit("/", 1)[-1])
+    # Some extracted O2R entries have an _Overflow suffix when the resource
+    # exceeds the normal texture allocation. The source texture keeps its
+    # original XML/C symbol and format.
+    candidates = [resource]
+    while candidates[-1].endswith("_Overflow"):
+        candidates.append(candidates[-1][:-len("_Overflow")])
+    for candidate in candidates:
+        if candidate in formats:
+            return formats[candidate]
+        basename = candidate.rsplit("/", 1)[-1]
+        if basename in formats:
+            return formats[basename]
+    return None
 
 
 def make_common_header(resource_version: int) -> bytes:
