@@ -343,15 +343,16 @@ def build_archive(
         raise ValueError("Input and output archives must be different")
 
     entries = load_manifest(manifest_path)
-    original_formats, c_format_resolutions = resolve_original_formats(
-        decomp_assets_root, sorted(rgba_entries)
-    )
     manifest_by_resource = {entry["resource"]: entry for entry in entries}
     palette_entries = {
         key: value for key, value in manifest_by_resource.items()
         if value.get("styleMode") == "native-palette-preserve"
     }
     rgba_entries = {key: value for key, value in manifest_by_resource.items() if key not in palette_entries}
+
+    original_formats, c_format_resolutions = resolve_original_formats(
+        decomp_assets_root, sorted(rgba_entries)
+    )
 
     stats: collections.Counter = collections.Counter()
     if c_format_resolutions:
