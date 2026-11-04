@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Build the final OTEX V1 O2R directly from PackBuild PNG assets.
 
-RGBA32 replacements use the engine's LOAD_AS_RAW path, so the builder does
-not need to reconstruct each original N64 texture's pixel format or row pitch.
+RGBA32 replacements use the engine's LOAD_AS_RAW path, so the builder uses the original N64 pixel format and row pitch metadata to calculate raw-import scaling.
 The checked-in O2R supplies resource headers and byte-exact native palettes.
 """
 
