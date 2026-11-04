@@ -118,8 +118,6 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
                     ):
                         add(archive + "/" + alias, fmt, str(path))
 
-    if not formats:
-        raise ValueError(f"No texture format definitions found under {root}")
     return formats
 
 
