@@ -396,6 +396,28 @@ def make_v1_rgba32(
     return bytes(header) + body + rgba_pixels
 
 
+def encode_rgb5a1_png(path: str | Path, expected_size: tuple[int, int]) -> bytes:
+    """Re-encode a ZAPD RGB5A1 inspection PNG into big-endian N64 TLUT bytes.
+
+    ZAPD expands 5-bit channels with (v << 3) | (v >> 2), then converts
+    them back with >> 3. Alpha is stored as a single nonzero bit.
+    """
+    with Image.open(path) as image:
+        image.load()
+        if image.size != expected_size:
+            raise ValueError(
+                f"{path}: palette PNG dimensions {image.size} do not match "
+                f"resource dimensions {expected_size}"
+            )
+        pixels = image.convert("RGBA").getdata()
+
+    result = bytearray()
+    for red, green, blue, alpha in pixels:
+        value = ((red >> 3) << 11) | ((green >> 3) << 6) | ((blue >> 3) << 1) | int(alpha != 0)
+        result.extend(((value >> 8) & 0xFF, value & 0xFF))
+    return bytes(result)
+
+
 def _zip_info_like(info: zipfile.ZipInfo) -> zipfile.ZipInfo:
     result = zipfile.ZipInfo(info.filename, date_time=info.date_time)
     result.compress_type = zipfile.ZIP_STORED
@@ -477,15 +499,35 @@ def build_archive(
                     if len(original) < V0_PIXEL_OFFSET or struct.unpack_from("<I", original, 4)[0] != OTEX_MAGIC:
                         raise ValueError(f"{name}: native palette template is not OTEX")
                     version = struct.unpack_from("<I", original, 8)[0]
-                    texture_type = struct.unpack_from("<I", original, OTEX_HEADER_SIZE)[0]
+                    texture_type, palette_width, palette_height, palette_size = struct.unpack_from(
+                        "<IIII", original, OTEX_HEADER_SIZE
+                    )
                     if version != 0 or texture_type != 2:
                         raise ValueError(
                             f"{name}: expected native V0 RGBA16 palette (version=0,type=2), "
                             f"found version={version}, type={texture_type}"
                         )
-                    # The RGB5A1 PNG is an inspection/source asset only. Keep
-                    # the archive's original palette bytes, including padding.
+                    if (palette_width, palette_height) != entry["_override_size"]:
+                        raise ValueError(
+                            f"{name}: native palette dimensions {palette_width}x{palette_height} "
+                            f"do not match manifest overrideSize {entry['_override_size']}"
+                        )
+                    palette_pixels = encode_rgb5a1_png(asset_path, (palette_width, palette_height))
+                    if palette_size != len(palette_pixels):
+                        raise ValueError(
+                            f"{name}: native palette declares {palette_size} bytes, "
+                            f"but RGB5A1 PNG encodes {len(palette_pixels)}"
+                        )
+                    if len(original) < V0_PIXEL_OFFSET + palette_size:
+                        raise ValueError(f"{name}: native palette resource is truncated")
+                    if original[V0_PIXEL_OFFSET:V0_PIXEL_OFFSET + palette_size] != palette_pixels:
+                        raise ValueError(
+                            f"{name}: RGB5A1 PNG does not reproduce the original native palette bytes"
+                        )
+                    # Keep the original resource byte-for-byte after proving
+                    # the checked-in RGB5A1 source asset reproduces its TLUT.
                     converted = original
+                    stats["verified-native-palette-png"] += 1
                     stats["preserved-native-palette"] += 1
                 else:
                     with Image.open(asset_path) as image:
