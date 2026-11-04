@@ -10,7 +10,7 @@ from PIL import Image
 from tools.build_texture_pack import (
     OTEX_MAGIC,
     PORT_VERSION,
-    TEX_FLAG_LOAD_AS_IMG,
+    TEX_FLAG_LOAD_AS_RAW,
     build_archive,
 )
 
@@ -22,6 +22,16 @@ def make_v0(texture_type: int, width: int, height: int, pixels: bytes, padding: 
     data_size = len(pixels)
     body = struct.pack("<IIII", texture_type, width, height, data_size)
     return bytes(header) + body + pixels + padding
+
+
+def make_decomp_xml(root: Path, fmt: str = "rgba16") -> Path:
+    xml = root / "objects"
+    xml.mkdir(parents=True, exist_ok=True)
+    (xml / "test.xml").write_text(
+        f'<Root><File Name="test"><Texture Name="sample" Format="{fmt}" Offset="0x10" /></File></Root>',
+        encoding="utf-8",
+    )
+    return root
 
 
 class DirectPackBuildTests(unittest.TestCase):
@@ -75,7 +85,8 @@ class DirectPackBuildTests(unittest.TestCase):
                 ]
             }), encoding="utf-8")
 
-            stats = build_archive(source, output, packbuild, manifest)
+            decomp = make_decomp_xml(root / "decomp")
+            stats = build_archive(source, output, packbuild, manifest, decomp)
             self.assertEqual(stats["built-v1-rgba32-from-png"], 1)
             self.assertEqual(stats["preserved-native-palette"], 1)
 
@@ -91,7 +102,8 @@ class DirectPackBuildTests(unittest.TestCase):
                 data_size = struct.unpack_from("<I", result, 0x58)[0]
                 self.assertEqual((texture_type, width, height), (1, 4, 2))
                 self.assertEqual(flags, TEX_FLAG_LOAD_AS_IMG)
-                self.assertAlmostEqual(h_scale, 1.0)
+                self.assertEqual(flags, 0x01)
+                self.assertAlmostEqual(h_scale, 4.0)  # 2x width scale * RGBA16->RGBA32 byte scale
                 self.assertAlmostEqual(v_scale, 1.0)
                 self.assertEqual(data_size, 32)
                 self.assertEqual(result[0x5C:], rgba)
@@ -113,8 +125,9 @@ class DirectPackBuildTests(unittest.TestCase):
                 "originalSize": [2, 2],
                 "overrideSize": [4, 2],
             }]}), encoding="utf-8")
+            decomp = make_decomp_xml(root / "decomp")
             with self.assertRaisesRegex(ValueError, "template dimensions"):
-                build_archive(source, root / "output.o2r", root / "PackBuild", manifest)
+                build_archive(source, root / "output.o2r", root / "PackBuild", manifest, decomp)
 
 
 if __name__ == "__main__":
