@@ -118,6 +118,10 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
                     ):
                         add(archive + "/" + alias, fmt, str(path))
 
+    # This engine-owned texture is declared as an I4 include and consumed
+    # through TransitionCircle_LoadAndSetTexture rather than a direct load
+    # macro, so the C display-list scanner cannot infer it by symbol.
+    formats.setdefault("code/fbdemo_circle/gCircleTex", "i4")
     return formats
 
 
