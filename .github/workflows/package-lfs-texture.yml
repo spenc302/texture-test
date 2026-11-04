@@ -1,26 +1,18 @@
-name: Build Quest texture pack from PackBuild sources
+name: Build Retro-native Majora's Mask texture pack
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'tools/build_texture_pack.py'
-      - 'tests/test_build_texture_pack.py'
-      - 'MajorasMask_UnrealInspired_FullReskin/PackBuild/**'
-      - 'MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json'
-      - '.github/workflows/package-lfs-texture.yml'
   push:
-    branches: [main]
+    branches: [main, build-o2r-from-packbuild]
     paths:
-      - 'tools/build_texture_pack.py'
-      - 'tests/test_build_texture_pack.py'
+      - 'tools/build_retro_texture_pack.dart'
       - 'MajorasMask_UnrealInspired_FullReskin/PackBuild/**'
       - 'MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json'
+      - 'MajorasMask_UnrealInspired_FullReskin/Retro_Texture_Manifest.json'
       - '.github/workflows/package-lfs-texture.yml'
 
 concurrency:
-  group: texture-pack-build-\${{ github.ref }}
+  group: retro-texture-pack-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -29,67 +21,72 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
-      - name: Check out PackBuild sources and manifest
+      - name: Check out texture sources
         uses: actions/checkout@v4
-        # Deliberately no Git LFS checkout and no old O2R template.
 
-      - name: Fetch legacy O2R for weapon-only fallback
-        run: |
-          git lfs install --local
-          git lfs pull --include="MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r"
-          test -s MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r
-          ! grep -q "version https://git-lfs.github.com/spec/v1" MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r
-
-      - name: Check out Majora's Mask N64 extraction metadata
+      - name: Check out pinned Retro source
         uses: actions/checkout@v4
         with:
-          repository: 2ship2harkinian/2ship2harkinian
-          ref: develop
-          path: decomp
-          sparse-checkout: |
-            mm/assets/xml/N64_US
-            mm/src
-          sparse-checkout-cone-mode: true
+          repository: HarbourMasters/retro
+          ref: 43c8e91228333c2bbd1f4cdb66433a205ee9ade2
+          path: retro
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
-          python-version: "3.x"
+          channel: stable
+          cache: true
 
-      - name: Install PNG decoder
-        run: python -m pip install --disable-pip-version-check Pillow
+      - name: Resolve Retro dependencies
+        working-directory: retro
+        run: flutter pub get
 
-      - name: Run builder regression tests
-        run: python -m unittest discover -s tests -v
-
-      - name: Build a fresh O2R from manifest and PNGs
+      - name: Build using Retro's texture conversion code
+        working-directory: retro
         run: |
-          python tools/build_texture_pack.py \
-            --packbuild MajorasMask_UnrealInspired_FullReskin/PackBuild \
-            --manifest MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json \
-            --decomp-assets decomp/mm/assets/xml/N64_US \
-            --decomp-source-root decomp/mm \
-            --fallback-archive MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r \
-            --unresolved-report unresolved-texture-formats.txt \
-            --output texture-pack-v1.o2r
+          mkdir -p tool
+          cp ../tools/build_retro_texture_pack.dart tool/build_texture_pack.dart
+          dart run tool/build_texture_pack.dart \
+            --source-root "$GITHUB_WORKSPACE/MajorasMask_UnrealInspired_FullReskin" \
+            --metadata "$GITHUB_WORKSPACE/MajorasMask_UnrealInspired_FullReskin/Retro_Texture_Manifest.json" \
+            --output "$GITHUB_WORKSPACE/texture-pack-retro-native.o2r"
 
-      - name: Verify generated O2R
-        shell: bash
+      - name: Verify archive and resource headers
         run: |
-          test -s texture-pack-v1.o2r
-          python -m zipfile -t texture-pack-v1.o2r
-          ls -lh texture-pack-v1.o2r
-          sha256sum texture-pack-v1.o2r
+          python - <<'PY'
+          import struct
+          import zipfile
 
-      - name: Publish O2R as a downloadable artifact
+          path = "texture-pack-retro-native.o2r"
+          with zipfile.ZipFile(path) as archive:
+              bad = archive.testzip()
+              if bad:
+                  raise SystemExit(f"ZIP CRC failure: {bad}")
+              names = archive.namelist()
+              if len(names) != 13512:
+                  raise SystemExit(f"Expected 13512 resources, got {len(names)}")
+              if "portVersion" in names:
+                  raise SystemExit("Retro patch archive should not add portVersion")
+              for name in names:
+                  data = archive.read(name)
+                  if data[4:8] != b"OTEX":
+                      raise SystemExit(f"{name}: invalid OTEX FourCC")
+                  if data[12:20] != bytes.fromhex("efbeaddeefbeadde"):
+                      raise SystemExit(f"{name}: invalid 64-bit resource ID")
+                  if struct.unpack_from("<I", data, 0x14)[0] != 0:
+                      raise SystemExit(f"{name}: invalid resource version field")
+          print(f"Verified {len(names)} Retro-native texture resources")
+          PY
+          ls -lh texture-pack-retro-native.o2r
+          sha256sum texture-pack-retro-native.o2r
+
+      - name: Publish O2R artifact
         uses: actions/upload-artifact@v4
         with:
-          name: texture-pack-v1-o2r
-          path: |
-            texture-pack-v1.o2r
-            unresolved-texture-formats.txt
+          name: texture-pack-retro-native
+          path: texture-pack-retro-native.o2r
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
