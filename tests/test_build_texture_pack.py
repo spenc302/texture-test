@@ -13,6 +13,7 @@ from tools.build_texture_pack import (
     TEX_FLAG_LOAD_AS_RAW,
     build_archive,
     load_original_formats,
+    load_port_texture_formats,
     resolve_original_formats,
 )
 
@@ -37,6 +38,37 @@ def make_decomp_xml(root: Path, fmt: str = "rgba16") -> Path:
 
 
 class DirectPackBuildTests(unittest.TestCase):
+    def test_2ship_metadata_maps_all_zapd_texture_types_and_checks_dimensions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            metadata_path = Path(temp) / "2ship-metadata.json"
+            type_formats = {
+                1: "rgba32", 2: "rgba16", 3: "ci4", 4: "ci8", 5: "i4",
+                6: "i8", 7: "ia4", 8: "ia8", 9: "ia16",
+            }
+            metadata = {
+                f"test/resource_{texture_type}": {
+                    "textureType": texture_type,
+                    "textureWidth": 32,
+                    "textureHeight": 16,
+                }
+                for texture_type in type_formats
+            }
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            resources = list(metadata)
+            formats = load_port_texture_formats(
+                metadata_path,
+                resources,
+                {resource: (32, 16) for resource in resources},
+            )
+            self.assertEqual(
+                formats,
+                {resource: type_formats[index + 1] for index, resource in enumerate(resources)},
+            )
+            with self.assertRaisesRegex(ValueError, "do not match Overrides_Manifest originalSize"):
+                load_port_texture_formats(
+                    metadata_path, [resources[0]], {resources[0]: (64, 16)}
+                )
+
     def test_builds_v1_from_png_and_preserves_palette_exactly(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -134,11 +166,12 @@ class DirectPackBuildTests(unittest.TestCase):
                 '<Root><File Name="test"><Texture Name="gTexture" Format="rgba16"/></File></Root>',
                 encoding="utf-8",
             )
-            resolved, from_c = resolve_original_formats(
+            resolved, from_c, from_port = resolve_original_formats(
                 root, ["objects/test/gTexture_Overflow"]
             )
             self.assertEqual(resolved["objects/test/gTexture_Overflow"], "rgba16")
             self.assertEqual(from_c, 0)
+            self.assertEqual(from_port, 0)
 
     def test_c_display_list_format_is_used_when_xml_has_no_texture_entry(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -160,6 +193,7 @@ class DirectPackBuildTests(unittest.TestCase):
             )
             self.assertEqual(resolved["scenes/nonmq/TEST/gSceneTexture"], "ia8")
             self.assertEqual(from_c, 1)
+            self.assertEqual(from_port, 0)
 
     def test_rejects_manifest_archive_dimension_mismatch(self):
         with tempfile.TemporaryDirectory() as temp:
