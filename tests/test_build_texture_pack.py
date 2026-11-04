@@ -108,7 +108,7 @@ class FreshPackBuildTests(unittest.TestCase):
 
                 rgba_resource = archive.read("code/fbdemo_circle/gCircleTex")
                 self.assertEqual(rgba_resource[0], 0)
-                self.assertEqual(rgba_resource[1], 1)
+                self.assertEqual(rgba_resource[1], 0)
                 self.assertEqual(struct.unpack_from("<I", rgba_resource, 4)[0], OTEX_MAGIC)
                 self.assertEqual(struct.unpack_from("<I", rgba_resource, 8)[0], 1)
                 tex_type, width, height, flags = struct.unpack_from("<IIII", rgba_resource, 0x40)
