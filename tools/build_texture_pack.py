@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build the final OTEX V1 O2R directly from PackBuild PNG assets.
+"""Build a fresh OTEX V1 O2R from PackBuild PNGs and the manifest.
 
-RGBA32 replacements use the engine's LOAD_AS_RAW path, so the builder uses the original N64 pixel format and row pitch metadata to calculate raw-import scaling.
-The checked-in O2R supplies resource headers and byte-exact native palettes.
+No existing O2R/OTR archive is used as a template. Resource names come from
+Overrides_Manifest.json; original N64 formats come from ZAPD XML and the
+source C texture includes. RGBA32 replacements use LOAD_AS_RAW. Native
+RGBA16 palette PNGs are encoded back into N64 RGBA5551 bytes.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -17,16 +18,22 @@ import struct
 import zipfile
 from pathlib import Path
 from typing import Any
+import xml.etree.ElementTree as ET
 
 from PIL import Image
 
 OTEX_MAGIC = 0x4F544558
-OTEX_HEADER_SIZE = 0x40
+COMMON_HEADER_SIZE = 0x40
 V0_PIXEL_OFFSET = 0x50
 V1_PIXEL_OFFSET = 0x5C
 TEX_FLAG_LOAD_AS_RAW = 0x01
-BYTES_PER_PIXEL = {"rgba32": 4.0, "rgba16": 2.0, "ci8": 1.0, "ia8": 1.0, "ia16": 2.0, "i8": 1.0, "ci4": 0.5, "ia4": 0.5, "i4": 0.5, "yuv16": 2.0}
+BYTES_PER_PIXEL = {
+    "rgba32": 4.0, "rgba16": 2.0, "ci8": 1.0, "ia8": 1.0,
+    "ia16": 2.0, "i8": 1.0, "ci4": 0.5, "ia4": 0.5,
+    "i4": 0.5, "yuv16": 2.0,
+}
 PORT_VERSION = b"\x01\x00\x05\x00\x00\x00\x01"
+RESOURCE_ID = 0xDEADBEEFDEADBEEF
 
 
 def load_manifest(path: str | Path) -> list[dict[str, Any]]:
@@ -39,255 +46,372 @@ def load_manifest(path: str | Path) -> list[dict[str, Any]]:
     for entry in entries:
         if not isinstance(entry, dict):
             raise ValueError(f"{path}: malformed manifest entry")
-        resource = entry.get("resource")
-        asset = entry.get("asset")
-        original = entry.get("originalSize")
-        replacement = entry.get("overrideSize")
-        if not isinstance(resource, str) or not resource:
-            raise ValueError(f"{path}: entry has no resource key")
-        if resource in seen:
-            raise ValueError(f"{path}: duplicate resource key {resource}")
-        seen.add(resource)
+        resource, asset = entry.get("resource"), entry.get("asset")
+        original, replacement = entry.get("originalSize"), entry.get("overrideSize")
+        if not isinstance(resource, str) or not resource or resource in seen:
+            raise ValueError(f"{path}: missing or duplicate resource key {resource!r}")
+        if resource.startswith("/") or ".." in Path(resource).parts:
+            raise ValueError(f"{path}: unsafe resource key {resource!r}")
         if not isinstance(asset, str) or not asset:
             raise ValueError(f"{path}: {resource}: missing asset path")
+        if asset.startswith("/") or ".." in Path(asset).parts:
+            raise ValueError(f"{path}: {resource}: unsafe asset path {asset!r}")
         if not isinstance(original, list) or len(original) != 2:
             raise ValueError(f"{path}: {resource}: originalSize must be [width, height]")
         if not isinstance(replacement, list) or len(replacement) != 2:
             raise ValueError(f"{path}: {resource}: overrideSize must be [width, height]")
         try:
-            dimensions = [int(value) for value in (*original, *replacement)]
+            dims = [int(v) for v in (*original, *replacement)]
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{path}: {resource}: dimensions must be integers") from exc
-        if min(dimensions) <= 0:
+        if min(dims) <= 0:
             raise ValueError(f"{path}: {resource}: dimensions must be positive")
-        entry["_original_size"] = tuple(dimensions[:2])
-        entry["_override_size"] = tuple(dimensions[2:])
+        seen.add(resource)
+        entry["_original_size"] = (dims[0], dims[1])
+        entry["_override_size"] = (dims[2], dims[3])
     return entries
 
 
+def _resource_archive_name(
+    file_name: str, out_name: str | None, directory_parts: tuple[str, ...]
+) -> str:
+    archive = out_name or file_name
+    if archive.endswith(".unarchive"):
+        archive = archive[:-10]
+    if out_name:
+        archive = file_name + "/" + archive
+    # XML nesting is meaningful: scenes/nonmq/KAKUSIANA.xml maps to
+    # scenes/nonmq/KAKUSIANA, not merely KAKUSIANA.
+    prefix = "/".join(directory_parts)
+    if prefix and not archive.startswith(prefix + "/"):
+        archive = prefix + "/" + archive
+    return archive
 
-def load_original_formats(xml_root: str | Path) -> dict[str, str]:
-    """Index original N64 formats by symbolic and offset-based OTR resource names."""
-    formats: dict[str, str] = {}
-    def add(key: str, fmt: str, source: str) -> None:
-        previous = formats.get(key)
-        if previous is not None and previous != fmt:
-            raise ValueError(f"Conflicting original formats for {key}: {previous} vs {fmt} ({source})")
-        formats[key] = fmt
+
+def load_original_formats(xml_root: str | Path, source_root: str | Path | None = None) -> dict[str, str]:
+    """Index formats from ZAPD XML and aliases from C arrays' included assets."""
     root = Path(xml_root)
     if not root.is_dir():
         raise FileNotFoundError(f"Decomp XML directory does not exist: {root}")
-    for path in root.rglob("*.xml"):
-        source = path.read_text(encoding="utf-8-sig")
-        group = path.parent.name
-        for fm in re.finditer(r'<File\b([^>]*)>(.*?)</File>', source, re.S):
-            attrs, body = fm.group(1), fm.group(2)
-            nm = re.search(r'\bName="([^"]+)"', attrs)
-            out = re.search(r'\bOutName="([^"]+)"', attrs)
-            if not nm:
+    formats: dict[str, str] = {}
+
+    def add(key: str, fmt: str, source: str) -> None:
+        old = formats.get(key)
+        if old is not None and old != fmt:
+            raise ValueError(f"Conflicting original formats for {key}: {old} vs {fmt} ({source})")
+        formats[key] = fmt
+
+    for xml_path in root.rglob("*.xml"):
+        try:
+            xml = ET.parse(xml_path).getroot()
+        except ET.ParseError as exc:
+            raise ValueError(f"Invalid decomp XML {xml_path}: {exc}") from exc
+        directory_parts = xml_path.parent.relative_to(root).parts
+        for file_node in xml.findall(".//File"):
+            file_name = file_node.get("Name")
+            if not file_name:
                 continue
-            file_name = nm.group(1)
-            archive = out.group(1) if out else file_name
-            if archive.endswith(".unarchive"):
-                archive = archive[:-10]
-            if out:
-                archive = file_name + "/" + archive
-            if group in {"code", "misc", "objects"} and not archive.startswith(group + "/"):
-                archive = group + "/" + archive
-            for tm in re.finditer(r'<Texture\b([^>]*)/?>', body):
-                ta = tm.group(1)
-                tn = re.search(r'\bName="([^"]+)"', ta)
-                tf = re.search(r'\bFormat="([^"]+)"', ta)
-                if not tf:
-                    continue
-                fmt = tf.group(1).lower()
+            resource_dirs: tuple[str, ...] = ()
+            if directory_parts and directory_parts[0] in {"code", "misc", "objects", "overlays"}:
+                # These XML folders are also the first O2R resource path segment.
+                resource_dirs = (directory_parts[0],)
+            elif directory_parts and directory_parts[0] == "scenes":
+                # Scene XMLs live in assets/xml/scenes/<scene>/<scene>.xml,
+                # while O2R keys are scenes/nonmq/<File Name> or scenes/mq/<File Name>.
+                game = (file_node.get("Game") or "MM").upper()
+                mode = "mq" if game == "MQ" else "nonmq"
+                resource_dirs = ("scenes", mode)
+            # interface/, archives/, and boot/ are XML organization folders,
+            # not O2R path prefixes (e.g. interface/do_action_static.xml ->
+            # do_action_static/<texture>).
+            archive = _resource_archive_name(file_name, file_node.get("OutName"), resource_dirs)
+            for texture in file_node.findall(".//Texture"):
+                fmt = (texture.get("Format") or "").lower()
                 if fmt not in BYTES_PER_PIXEL:
                     continue
-                if tn:
-                    add(archive + "/" + tn.group(1), fmt, str(path))
-                off = re.search(r'\bOffset="(0x[0-9A-Fa-f]+|[0-9]+)"', ta)
-                if off:
-                    suffix = f"{int(off.group(1), 0):06X}"
-                    for alias in (f"{file_name}_Tex_{suffix}", f"{file_name}Tex_{suffix}",
-                                  f"{file_name}_TLUT_{suffix}", f"{file_name}TLUT_{suffix}"):
-                        add(archive + "/" + alias, fmt, str(path))
-    if not formats:
-        raise ValueError(f"No texture format definitions found under {root}")
+                name = texture.get("Name")
+                if name:
+                    add(archive + "/" + name, fmt, str(xml_path))
+                offset = texture.get("Offset")
+                if offset:
+                    try:
+                        suffix = f"{int(offset, 0):06X}"
+                    except ValueError as exc:
+                        raise ValueError(f"{xml_path}: invalid texture offset {offset!r}") from exc
+                    for alias in (
+                        f"{file_name}_Tex_{suffix}", f"{file_name}Tex_{suffix}",
+                        f"{file_name}_TLUT_{suffix}", f"{file_name}TLUT_{suffix}",
+                    ):
+                        add(archive + "/" + alias, fmt, str(xml_path))
+
+    # A C symbol may be declared in a different source file from the display
+    # list that references it. Resolve the declaration's included ZAPD asset,
+    # e.g. gCircleTex -> assets/code/circle_tex/circle.i4.inc.c.
+    decomp_root = Path(source_root) if source_root is not None else root.parent.parent
+    source_roots = [decomp_root / "src", decomp_root / "include"]
+    symbol_formats: dict[str, str] = {}
+    include_pattern = re.compile(
+        r'\b([A-Za-z_]\w*)\s*\[\s*\]\s*=\s*\{\s*#include\s+"assets/[^"]+\.'
+        r'(rgba32|rgba16|ci8|ia8|ia16|i8|ci4|ia4|i4|yuv16)\.inc\.c"',
+        re.I | re.S,
+    )
+    for source_root in source_roots:
+        if not source_root.is_dir():
+            continue
+        for source_path in source_root.rglob("*"):
+            if source_path.suffix.lower() not in {".c", ".h"}:
+                continue
+            source = source_path.read_text(encoding="utf-8", errors="replace")
+            for match in include_pattern.finditer(source):
+                symbol, fmt = match.group(1), match.group(2).lower()
+                previous = symbol_formats.get(symbol)
+                if previous is not None and previous != fmt:
+                    raise ValueError(
+                        f"Conflicting C include formats for symbol {symbol}: {previous} vs {fmt}"
+                    )
+                symbol_formats[symbol] = fmt
+
+    # Resource paths in O2R manifests can use the consuming overlay/symbol
+    # name rather than the XML extraction name. Match the terminal symbol.
+    for symbol, fmt in symbol_formats.items():
+        add_alias = symbol
+        formats.setdefault(add_alias, fmt)
     return formats
+
+
+def original_format_for(resource: str, formats: dict[str, str]) -> str | None:
+    # Do not collapse _Overflow resources onto their base texture: an
+    # overflow view can intentionally use a different source format.
+    if resource in formats:
+        return formats[resource]
+    return formats.get(resource.rsplit("/", 1)[-1])
+
+
+def make_common_header(resource_version: int) -> bytes:
+    """Create the standard OTR header used by OTRExporter::WriteHeader."""
+    header = bytearray(COMMON_HEADER_SIZE)
+    header[0] = 0  # Endianness::Little
+    header[1] = 0  # isCustom (OTRExporter writes false for texture resources)
+    header[2] = 0
+    header[3] = 0
+    struct.pack_into("<I", header, 4, OTEX_MAGIC)
+    struct.pack_into("<I", header, 8, resource_version)
+    struct.pack_into("<Q", header, 0x0C, RESOURCE_ID)
+    # OTRExporter writes resourceVersions[OTEX] at 0x10. Texture version
+    # registration currently uses 0; this intentionally overwrites the upper
+    # four bytes of the legacy 64-bit ID field, matching the native writer.
+    struct.pack_into("<I", header, 0x10, 0)
+    struct.pack_into("<Q", header, 0x14, 0)  # ROM CRC
+    struct.pack_into("<I", header, 0x1C, 0)  # ROM enum
+    return bytes(header)
 
 
 def make_v1_rgba32(
     resource: str,
-    template: bytes,
     rgba_pixels: bytes,
     image_size: tuple[int, int],
-    manifest_entry: dict[str, Any],
+    entry: dict[str, Any],
     original_formats: dict[str, str],
 ) -> bytes:
-    if len(template) < V0_PIXEL_OFFSET or struct.unpack_from("<I", template, 4)[0] != OTEX_MAGIC:
-        raise ValueError(f"{resource}: template is not an OTEX resource")
-    version = struct.unpack_from("<I", template, 8)[0]
-    if version != 0:
-        raise ValueError(f"{resource}: expected V0 template, found OTEX version {version}")
-    texture_type, width, height, data_size = struct.unpack_from("<IIII", template, OTEX_HEADER_SIZE)
-    expected_width, expected_height = manifest_entry["_override_size"]
-    if (width, height) != (expected_width, expected_height):
+    width, height = image_size
+    if image_size != entry["_override_size"]:
         raise ValueError(
-            f"{resource}: template dimensions {width}x{height} do not match manifest "
-            f"overrideSize {expected_width}x{expected_height}"
+            f"{resource}: PNG dimensions {width}x{height} do not match "
+            f"manifest overrideSize {entry['_override_size']}"
         )
-    if image_size != (width, height):
-        raise ValueError(f"{resource}: PNG dimensions {image_size} do not match template {width}x{height}")
-    if texture_type != 1:
-        raise ValueError(f"{resource}: RGBA32 PNG maps to unexpected OTEX type {texture_type}")
+    native_width, native_height = entry["_original_size"]
+    original_format = original_format_for(resource, original_formats)
+    if original_format not in BYTES_PER_PIXEL:
+        raise ValueError(f"{resource}: missing/unsupported original N64 format {original_format!r}")
     expected_size = width * height * 4
     if len(rgba_pixels) != expected_size:
-        raise ValueError(f"{resource}: decoded PNG is {len(rgba_pixels)} bytes; expected {expected_size}")
-    if data_size != expected_size:
-        raise ValueError(f"{resource}: V0 template declares {data_size} bytes; expected {expected_size}")
-    if len(template) != V0_PIXEL_OFFSET + data_size:
-        raise ValueError(f"{resource}: malformed V0 template length {len(template)}")
-
-    original_format = original_formats.get(resource)
-    if original_format not in BYTES_PER_PIXEL:
-        raise ValueError(f"{resource}: missing/unsupported original N64 texture format {original_format!r}")
-    native_width, native_height = manifest_entry["_original_size"]
-    h_scale = (float(width) / float(native_width)) * (4.0 / BYTES_PER_PIXEL[original_format])
-    v_scale = float(height) / float(native_height)
-    if not math.isfinite(h_scale) or not math.isfinite(v_scale) or h_scale <= 0 or v_scale <= 0:
+        raise ValueError(f"{resource}: PNG decoded to {len(rgba_pixels)} bytes; expected {expected_size}")
+    h_scale = (width / native_width) * (4.0 / BYTES_PER_PIXEL[original_format])
+    v_scale = height / native_height
+    if not all(math.isfinite(v) and v > 0 for v in (h_scale, v_scale)):
         raise ValueError(f"{resource}: invalid raw-import scale {h_scale}x{v_scale}")
-    header = bytearray(template[:OTEX_HEADER_SIZE])
-    struct.pack_into("<I", header, 8, 1)
     body = struct.pack(
-        "<IIIIffI",
-        texture_type,
-        width,
-        height,
-        TEX_FLAG_LOAD_AS_RAW,
-        h_scale,
-        v_scale,
-        expected_size,
+        "<IIIIffI", 1, width, height, TEX_FLAG_LOAD_AS_RAW,
+        h_scale, v_scale, expected_size,
     )
-    return bytes(header) + body + rgba_pixels
+    return make_common_header(1) + body + rgba_pixels
 
 
-def _zip_info_like(info: zipfile.ZipInfo) -> zipfile.ZipInfo:
-    result = zipfile.ZipInfo(info.filename, date_time=info.date_time)
-    result.compress_type = zipfile.ZIP_STORED
-    result.comment = info.comment
-    result.extra = info.extra
-    result.internal_attr = info.internal_attr
-    result.external_attr = info.external_attr
-    result.create_system = info.create_system
-    return result
+def encode_rgba5551(image: Image.Image, resource: str) -> bytes:
+    """Encode RGBA PNG pixels to N64 RGBA16 (5/5/5/1), high byte first."""
+    rgba = image.convert("RGBA").tobytes()
+    if len(rgba) != image.width * image.height * 4:
+        raise ValueError(f"{resource}: invalid decoded palette pixel buffer")
+    result = bytearray(image.width * image.height * 2)
+    out = 0
+    for pos in range(0, len(rgba), 4):
+        r, g, b, a = rgba[pos:pos + 4]
+        word = ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (1 if a >= 128 else 0)
+        result[out] = (word >> 8) & 0xFF
+        result[out + 1] = word & 0xFF
+        out += 2
+    return bytes(result)
+
+
+def make_v0_rgba16_palette(resource: str, image: Image.Image, entry: dict[str, Any]) -> bytes:
+    if image.size != entry["_override_size"]:
+        raise ValueError(
+            f"{resource}: palette PNG dimensions {image.size} do not match "
+            f"manifest overrideSize {entry['_override_size']}"
+        )
+    pixels = encode_rgba5551(image, resource)
+    width, height = image.size
+    body = struct.pack("<IIII", 2, width, height, len(pixels))
+    return make_common_header(0) + body + pixels
+
+
+def _zip_info(name: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
+    info.compress_type = zipfile.ZIP_STORED
+    info.create_system = 3
+    info.external_attr = 0o100644 << 16
+    return info
+
+
+def _is_weapon_resource(resource: str) -> bool:
+    """Identify weapon assets eligible for byte-preserving legacy fallback."""
+    return bool(re.search(
+        r"(?:^|[/_])(?:bow|arrow|sword|shield|bomb|hookshot|hammer|boomerang|"
+        r"deku_stick|razor|gilded|great_fairy_sword|kokiri_sword|master_sword|"
+        r"fierce_deity_sword)(?:[/_.]|$)",
+        resource,
+        re.IGNORECASE,
+    ))
 
 
 def build_archive(
-    source_archive: str | Path,
     output_archive: str | Path,
     packbuild_root: str | Path,
     manifest_path: str | Path,
     decomp_assets_root: str | Path,
+    decomp_source_root: str | Path | None = None,
+    fallback_archive: str | Path | None = None,
+    unresolved_report: str | Path | None = None,
 ) -> collections.Counter:
-    source_archive = Path(source_archive)
     output_archive = Path(output_archive)
     packbuild_root = Path(packbuild_root)
-    if source_archive.resolve() == output_archive.resolve():
-        raise ValueError("Input and output archives must be different")
-
     entries = load_manifest(manifest_path)
-    original_formats = load_original_formats(decomp_assets_root)
-    manifest_by_resource = {entry["resource"]: entry for entry in entries}
-    palette_entries = {
-        key: value for key, value in manifest_by_resource.items()
-        if value.get("styleMode") == "native-palette-preserve"
-    }
-    rgba_entries = {key: value for key, value in manifest_by_resource.items() if key not in palette_entries}
-
+    original_formats = load_original_formats(decomp_assets_root, decomp_source_root)
+    palette_entries = [e for e in entries if e.get("styleMode") == "native-palette-preserve"]
+    rgba_entries = [e for e in entries if e.get("styleMode") != "native-palette-preserve"]
+    missing_formats = sorted(
+        e["resource"] for e in rgba_entries
+        if original_format_for(e["resource"], original_formats) not in BYTES_PER_PIXEL
+    )
+    missing_format_set = set(missing_formats)
     stats: collections.Counter = collections.Counter()
-    with zipfile.ZipFile(source_archive, "r") as source:
-        source_names = source.namelist()
-        if len(source_names) != len(set(source_names)):
-            raise ValueError("Source O2R contains duplicate resource names")
-        if "portVersion" not in source_names:
-            raise ValueError("Source O2R is missing portVersion")
-        missing_resources = sorted(set(manifest_by_resource) - set(source_names))
-        unexpected_resources = sorted(set(source_names) - set(manifest_by_resource) - {"portVersion"})
-        if missing_resources or unexpected_resources:
-            raise ValueError(
-                f"Archive/manifest resource mismatch: {len(missing_resources)} missing, "
-                f"{len(unexpected_resources)} unexpected; missing examples={missing_resources[:10]}, "
-                f"unexpected examples={unexpected_resources[:10]}"
-            )
+    built_entries: list[dict[str, Any]] = []
+    unresolved: list[str] = []
+    output_archive.parent.mkdir(parents=True, exist_ok=True)
 
+    fallback = zipfile.ZipFile(fallback_archive, "r") if fallback_archive else None
+    try:
+        fallback_names = set(fallback.namelist()) if fallback else set()
         with zipfile.ZipFile(output_archive, "w", allowZip64=True) as output:
-            output.comment = source.comment
-            for info in source.infolist():
-                original = source.read(info.filename)
-                name = info.filename
-                if name == "portVersion":
-                    if original != PORT_VERSION:
-                        raise ValueError(f"Unexpected portVersion marker: {original!r}")
-                    output.writestr(_zip_info_like(info), original)
-                    stats["port-marker"] += 1
+            output.writestr(_zip_info("portVersion"), PORT_VERSION)
+            stats["port-marker"] += 1
+            for entry in entries:
+                resource = entry["resource"]
+                if resource in missing_format_set:
+                    # Do not guess source formats. Preserve only clearly named
+                    # weapon resources from the explicitly supplied legacy O2R.
+                    if fallback and _is_weapon_resource(resource) and resource in fallback_names:
+                        legacy_data = fallback.read(resource)
+                        if (len(legacy_data) < V0_PIXEL_OFFSET or legacy_data[0] != 0
+                                or legacy_data[1] != 0
+                                or struct.unpack_from("<I", legacy_data, 4)[0] != OTEX_MAGIC):
+                            raise ValueError(
+                                f"{resource}: legacy fallback is not a valid OTEX resource"
+                            )
+                        output.writestr(_zip_info(resource), legacy_data)
+                        stats["preserved-legacy-weapon-resource"] += 1
+                        built_entries.append(entry)
+                    else:
+                        unresolved.append(resource)
+                        stats["skipped-unresolved-format"] += 1
                     continue
 
-                entry = manifest_by_resource[name]
                 asset_path = packbuild_root / entry["asset"]
                 if not asset_path.is_file():
-                    raise FileNotFoundError(f"{name}: missing PackBuild asset {asset_path}")
-
-                if name in palette_entries:
-                    if len(original) < V0_PIXEL_OFFSET or struct.unpack_from("<I", original, 4)[0] != OTEX_MAGIC:
-                        raise ValueError(f"{name}: native palette template is not OTEX")
-                    version = struct.unpack_from("<I", original, 8)[0]
-                    texture_type = struct.unpack_from("<I", original, OTEX_HEADER_SIZE)[0]
-                    if version != 0 or texture_type != 2:
-                        raise ValueError(
-                            f"{name}: expected native V0 RGBA16 palette (version=0,type=2), "
-                            f"found version={version}, type={texture_type}"
-                        )
-                    # The RGB5A1 PNG is an inspection/source asset only. Keep
-                    # the archive's original palette bytes, including padding.
-                    converted = original
-                    stats["preserved-native-palette"] += 1
+                    raise FileNotFoundError(f"{resource}: missing PackBuild asset {asset_path}")
+                with Image.open(asset_path) as source_image:
+                    source_image.load()
+                    image = source_image.copy()
+                if entry.get("styleMode") == "native-palette-preserve":
+                    converted = make_v0_rgba16_palette(resource, image, entry)
+                    stats["built-v0-rgba16-palette-from-png"] += 1
                 else:
-                    with Image.open(asset_path) as image:
-                        image.load()
-                        image_size = image.size
-                        rgba_pixels = image.convert("RGBA").tobytes()
+                    rgba_pixels = image.convert("RGBA").tobytes()
                     converted = make_v1_rgba32(
-                        name, original, rgba_pixels, image_size, entry, original_formats
+                        resource, rgba_pixels, image.size, entry, original_formats
                     )
                     stats["built-v1-rgba32-from-png"] += 1
+                output.writestr(_zip_info(resource), converted)
+                built_entries.append(entry)
+    finally:
+        if fallback:
+            fallback.close()
 
-                output.writestr(_zip_info_like(info), converted)
-
-    if stats["built-v1-rgba32-from-png"] != len(rgba_entries):
-        raise RuntimeError(
-            f"Built {stats['built-v1-rgba32-from-png']} RGBA32 resources; "
-            f"manifest requires {len(rgba_entries)}"
-        )
-    if stats["preserved-native-palette"] != len(palette_entries):
-        raise RuntimeError(
-            f"Preserved {stats['preserved-native-palette']} palettes; "
-            f"manifest requires {len(palette_entries)}"
-        )
-
-    with zipfile.ZipFile(output_archive, "r") as check, zipfile.ZipFile(source_archive, "r") as source:
-        if check.namelist() != source.namelist():
-            raise RuntimeError("Resource names/order changed while building final O2R")
+    # Re-open and CRC-check all entries. Validate newly generated OTEX data;
+    # legacy weapon entries are preserved byte-for-byte, not reinterpreted.
+    with zipfile.ZipFile(output_archive, "r") as check:
+        expected_names = ["portVersion"] + [e["resource"] for e in built_entries]
+        if check.namelist() != expected_names:
+            raise RuntimeError("Generated O2R resource names/order differ from built entries")
         if check.read("portVersion") != PORT_VERSION:
-            raise RuntimeError("portVersion marker changed")
-        for name in palette_entries:
-            if check.read(name) != source.read(name):
-                raise RuntimeError(f"Native palette resource changed: {name}")
-        for name in list(rgba_entries)[:3]:
+            raise RuntimeError("Generated O2R has an invalid portVersion marker")
+        legacy_weapon_names = {
+            e["resource"] for e in built_entries if e["resource"] in missing_format_set
+        }
+        for entry in built_entries:
+            name = entry["resource"]
             data = check.read(name)
-            if struct.unpack_from("<I", data, 8)[0] != 1:
-                raise RuntimeError(f"{name}: final resource is not OTEX V1")
-            if struct.unpack_from("<I", data, 0x4C)[0] != TEX_FLAG_LOAD_AS_RAW:
-                raise RuntimeError(f"{name}: final resource is not flagged LOAD_AS_RAW")
+            if name in legacy_weapon_names:
+                continue
+            if len(data) < V0_PIXEL_OFFSET:
+                raise RuntimeError(f"{name}: truncated OTEX resource")
+            if data[0] != 0 or data[1] != 0:
+                raise RuntimeError(f"{name}: invalid common resource header")
+            if struct.unpack_from("<I", data, 4)[0] != OTEX_MAGIC:
+                raise RuntimeError(f"{name}: invalid OTEX FourCC")
+            expected_version = 0 if entry.get("styleMode") == "native-palette-preserve" else 1
+            if struct.unpack_from("<I", data, 8)[0] != expected_version:
+                raise RuntimeError(f"{name}: incorrect OTEX version")
+            if expected_version == 1:
+                if struct.unpack_from("<I", data, 0x4C)[0] != TEX_FLAG_LOAD_AS_RAW:
+                    raise RuntimeError(f"{name}: RGBA32 resource is not LOAD_AS_RAW")
+                width, height = struct.unpack_from("<II", data, 0x44)
+                size = struct.unpack_from("<I", data, 0x58)[0]
+                if size != width * height * 4 or len(data) != V1_PIXEL_OFFSET + size:
+                    raise RuntimeError(f"{name}: invalid RGBA32 payload length")
+            else:
+                texture_type, width, height, size = struct.unpack_from("<IIII", data, 0x40)
+                if texture_type != 2 or size != width * height * 2:
+                    raise RuntimeError(f"{name}: invalid RGBA16 palette payload")
+                if len(data) != V0_PIXEL_OFFSET + size:
+                    raise RuntimeError(f"{name}: invalid RGBA16 palette resource length")
+
+    accounted_rgba = (
+        stats["built-v1-rgba32-from-png"] +
+        stats["preserved-legacy-weapon-resource"] +
+        stats["skipped-unresolved-format"]
+    )
+    if accounted_rgba != len(rgba_entries):
+        raise RuntimeError("RGBA32 manifest entries were not fully accounted for")
+    if stats["built-v0-rgba16-palette-from-png"] != len(palette_entries):
+        raise RuntimeError("Not all native palette manifest entries were built")
+    if unresolved_report:
+        report_path = Path(unresolved_report)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            "\n".join(unresolved) + ("\n" if unresolved else ""),
+            encoding="utf-8",
+        )
     return stats
 
 
@@ -295,22 +419,19 @@ def main() -> None:
     root = Path(__file__).resolve().parents[1]
     pack_root = root / "MajorasMask_UnrealInspired_FullReskin"
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--source-o2r",
-        default=str(pack_root / "MajorasMask_UnrealInspired_Environment.o2r"),
-        help="V0 O2R resource/header template (default: checked-in LFS archive)",
-    )
-    parser.add_argument("--output", default="texture-pack-v1.o2r", help="final O2R output path")
-    parser.add_argument("--decomp-assets", required=True, help="zeldaret/mm assets/xml directory")
-    parser.add_argument("--packbuild", default=str(pack_root / "PackBuild"), help="PackBuild PNG root")
-    parser.add_argument(
-        "--manifest", default=str(pack_root / "Overrides_Manifest.json"),
-        help="texture manifest",
-    )
+    parser.add_argument("--output", default="texture-pack-v1.o2r")
+    parser.add_argument("--decomp-assets", required=True, help="Majora's Mask N64 XML directory")
+    parser.add_argument("--decomp-source-root", help="Repository root containing src/ and include/")
+    parser.add_argument("--packbuild", default=str(pack_root / "PackBuild"))
+    parser.add_argument("--manifest", default=str(pack_root / "Overrides_Manifest.json"))
+    parser.add_argument("--fallback-archive", help="Optional legacy O2R used only for unresolved weapon resources")
+    parser.add_argument("--unresolved-report", default="unresolved-texture-formats.txt")
     args = parser.parse_args()
-
-    stats = build_archive(args.source_o2r, args.output, args.packbuild, args.manifest, args.decomp_assets)
-    print("PackBuild -> OTEX V1 LOAD_AS_RAW O2R build complete:")
+    stats = build_archive(
+        args.output, args.packbuild, args.manifest, args.decomp_assets,
+        args.decomp_source_root, args.fallback_archive, args.unresolved_report
+    )
+    print("Fresh O2R build complete (known formats rebuilt; unresolved resources reported):")
     for name in sorted(stats):
         print(f"  {name}: {stats[name]}")
     print(f"Output size: {os.path.getsize(args.output):,} bytes")

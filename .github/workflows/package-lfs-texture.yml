@@ -1,21 +1,19 @@
-name: Build Quest texture pack directly from PackBuild
-
-# Keep large LFS-based pack builds serialized. A newer push supersedes an older run.
-concurrency:
-  group: texture-pack-build-${{ github.ref }}
-  cancel-in-progress: true
+name: Build Retro-native Majora's Mask texture pack
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, build-o2r-from-packbuild]
     paths:
-      - 'tools/build_texture_pack.py'
-      - 'tests/test_build_texture_pack.py'
+      - 'tools/build_retro_texture_pack.dart'
       - 'MajorasMask_UnrealInspired_FullReskin/PackBuild/**'
-      - 'MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json'
-      - 'MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r'
+      - 'MajorasMask_UnrealInspired_FullReskin/Retro_Source_Manifest.json'
+      - 'MajorasMask_UnrealInspired_FullReskin/Retro_Texture_Manifest.json'
       - '.github/workflows/package-lfs-texture.yml'
+
+concurrency:
+  group: retro-texture-pack-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -23,68 +21,72 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
-      - name: Check out repository and Git LFS files
+      - name: Check out texture sources
+        uses: actions/checkout@v4
+
+      - name: Check out pinned Retro source
         uses: actions/checkout@v4
         with:
-          lfs: true
+          repository: HarbourMasters/retro
+          ref: 43c8e91228333c2bbd1f4cdb66433a205ee9ade2
+          path: retro
 
-      - name: Check out authoritative Majora's Mask texture format XML
-        uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
-          repository: zeldaret/mm
-          ref: main
-          path: decomp
-          sparse-checkout: assets/xml
-          sparse-checkout-cone-mode: true
+          channel: stable
+          cache: true
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
+      - name: Resolve Retro dependencies
+        working-directory: retro
+        run: flutter pub get
 
-      - name: Install PNG decoder
-        run: python -m pip install --disable-pip-version-check Pillow
-
-      - name: Run direct-builder regression tests
-        run: python -m unittest discover -s tests -v
-
-      - name: Verify source O2R template was downloaded from Git LFS
-        shell: bash
+      - name: Build using Retro's texture conversion code
+        working-directory: retro
         run: |
-          SOURCE="MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r"
-          test -f "$SOURCE"
-          SIZE=$(stat -c%s "$SOURCE")
-          echo "Source O2R size: $SIZE bytes"
-          if [ "$SIZE" -lt 100000000 ]; then
-            echo "::error::Source is too small; Git LFS pointer may have been checked out instead."
-            exit 1
-          fi
-          python -m zipfile -t "$SOURCE"
+          mkdir -p tool
+          cp ../tools/build_retro_texture_pack.dart tool/build_texture_pack.dart
+          dart run tool/build_texture_pack.dart \
+            --source-root "$GITHUB_WORKSPACE/MajorasMask_UnrealInspired_FullReskin" \
+            --metadata "$GITHUB_WORKSPACE/MajorasMask_UnrealInspired_FullReskin/Retro_Texture_Manifest.json" \
+            --output "$GITHUB_WORKSPACE/texture-pack-retro-native.o2r"
 
-      - name: Build final OTEX V1 O2R directly from PackBuild PNGs
+      - name: Verify archive and resource headers
         run: |
-          python tools/build_texture_pack.py \
-            --source-o2r MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r \
-            --packbuild MajorasMask_UnrealInspired_FullReskin/PackBuild \
-            --manifest MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json \
-            --decomp-assets decomp/assets/xml \
-            --output texture-pack-v1.o2r
+          python - <<'PY'
+          import struct
+          import zipfile
 
-      - name: Verify final O2R archive
-        shell: bash
-        run: |
-          test -s texture-pack-v1.o2r
-          python -m zipfile -t texture-pack-v1.o2r
-          ls -lh texture-pack-v1.o2r
-          sha256sum texture-pack-v1.o2r
+          path = "texture-pack-retro-native.o2r"
+          with zipfile.ZipFile(path) as archive:
+              bad = archive.testzip()
+              if bad:
+                  raise SystemExit(f"ZIP CRC failure: {bad}")
+              names = archive.namelist()
+              if len(names) != 13512:
+                  raise SystemExit(f"Expected 13512 resources, got {len(names)}")
+              if "portVersion" in names:
+                  raise SystemExit("Retro patch archive should not add portVersion")
+              for name in names:
+                  data = archive.read(name)
+                  if data[4:8] != b"OTEX":
+                      raise SystemExit(f"{name}: invalid OTEX FourCC")
+                  if data[12:20] != bytes.fromhex("efbeaddeefbeadde"):
+                      raise SystemExit(f"{name}: invalid 64-bit resource ID")
+                  if struct.unpack_from("<I", data, 0x14)[0] != 0:
+                      raise SystemExit(f"{name}: invalid resource version field")
+          print(f"Verified {len(names)} Retro-native texture resources")
+          PY
+          ls -lh texture-pack-retro-native.o2r
+          sha256sum texture-pack-retro-native.o2r
 
-      - name: Publish final O2R as a downloadable artifact
+      - name: Publish O2R artifact
         uses: actions/upload-artifact@v4
         with:
-          name: texture-pack-v1-o2r
-          path: texture-pack-v1.o2r
+          name: texture-pack-retro-native
+          path: texture-pack-retro-native.o2r
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

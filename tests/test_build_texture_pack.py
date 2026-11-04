@@ -12,122 +12,176 @@ from tools.build_texture_pack import (
     PORT_VERSION,
     TEX_FLAG_LOAD_AS_RAW,
     build_archive,
+    make_common_header,
+    original_format_for,
 )
 
 
-def make_v0(texture_type: int, width: int, height: int, pixels: bytes, padding: bytes = b"") -> bytes:
-    header = bytearray(0x40)
-    struct.pack_into("<I", header, 4, OTEX_MAGIC)
-    struct.pack_into("<I", header, 8, 0)
-    data_size = len(pixels)
-    body = struct.pack("<IIII", texture_type, width, height, data_size)
-    return bytes(header) + body + pixels + padding
-
-
-def make_decomp_xml(root: Path, fmt: str = "rgba16") -> Path:
-    xml = root / "objects"
-    xml.mkdir(parents=True, exist_ok=True)
-    (xml / "test.xml").write_text(
-        f'<Root><File Name="test"><Texture Name="sample" Format="{fmt}" Offset="0x10" /></File></Root>',
+def write_decomp(root: Path) -> Path:
+    xml_root = root / "assets" / "xml"
+    code_xml = xml_root / "code"
+    code_xml.mkdir(parents=True)
+    (code_xml / "circle_tex.xml").write_text(
+        '<Root><File Name="code" OutName="circle_tex">'
+        '<Texture Name="sCircleTex" Format="i4" Width="64" Height="64" '
+        'Offset="0x138DD0"/></File></Root>',
         encoding="utf-8",
     )
-    return root
+    source = root / "src" / "code"
+    source.mkdir(parents=True)
+    (source / "z_circle_tex.c").write_text(
+        'const u64 gCircleTex[] = {\n'
+        '#include "assets/code/circle_tex/circle.i4.inc.c"\n'
+        '};\n',
+        encoding="utf-8",
+    )
+    return xml_root
 
 
-class DirectPackBuildTests(unittest.TestCase):
-    def test_builds_v1_from_png_and_preserves_palette_exactly(self):
+class FreshPackBuildTests(unittest.TestCase):
+    def test_common_header_matches_otr_exporter_layout(self):
+        header = make_common_header(1)
+        self.assertEqual(len(header), 0x40)
+        self.assertEqual(header[:4], bytes(4))
+        self.assertEqual(struct.unpack_from("<I", header, 4)[0], OTEX_MAGIC)
+        self.assertEqual(struct.unpack_from("<I", header, 8)[0], 1)
+        self.assertEqual(struct.unpack_from("<Q", header, 0x0C)[0], 0x00000000DEADBEEF)
+        self.assertEqual(header[0x14:0x20], bytes(12))
+
+    def test_overflow_resource_keeps_its_own_format(self):
+        formats = {
+            "objects/example/exampleTex": "i4",
+            "objects/example/exampleTex_Overflow": "i8",
+        }
+        self.assertEqual(
+            original_format_for("objects/example/exampleTex_Overflow", formats), "i8"
+        )
+
+    def test_builds_rgba32_raw_and_reconstructs_rgba16_palette(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             packbuild = root / "PackBuild"
-            packbuild.mkdir()
-
-            image_path = packbuild / "objects/test/sample.rgba32.png"
+            image_path = packbuild / "code/fbdemo_circle/gCircleTex.png"
             image_path.parent.mkdir(parents=True)
-            rgba = bytes([
-                255, 0, 0, 255, 0, 255, 0, 255,
-                0, 0, 255, 255, 255, 255, 255, 255,
-                10, 20, 30, 255, 40, 50, 60, 255,
-                70, 80, 90, 255, 100, 110, 120, 255,
-            ])
-            Image.frombytes("RGBA", (4, 2), rgba).save(image_path)
+            rgba = bytes([255, 0, 0, 255] * (64 * 64))
+            Image.frombytes("RGBA", (64, 64), rgba).save(image_path)
 
             palette_path = packbuild / "objects/test/palette.rgb5a1.png"
-            Image.new("RGBA", (2, 2), (12, 34, 56, 255)).save(palette_path)
-
-            image_template = make_v0(1, 4, 2, bytes(4 * 2 * 4))
-            # Deliberately include trailing native palette padding. It must
-            # survive byte-for-byte rather than being regenerated from PNG.
-            palette_template = make_v0(2, 2, 2, b"\x11" * 8, b"\xAA\xBB\xCC\xDD")
-            source = root / "source.o2r"
-            output = root / "output.o2r"
-            with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_STORED) as archive:
-                archive.writestr("portVersion", PORT_VERSION)
-                archive.writestr("objects/test/sample", image_template)
-                archive.writestr("objects/test/palette", palette_template)
+            palette_path.parent.mkdir(parents=True)
+            palette = Image.new("RGBA", (2, 1))
+            palette.putdata([(255, 128, 0, 255), (0, 0, 255, 0)])
+            palette.save(palette_path)
 
             manifest = root / "manifest.json"
             manifest.write_text(json.dumps({
                 "entries": [
                     {
-                        "resource": "objects/test/sample",
-                        "asset": "objects/test/sample.rgba32.png",
-                        "originalSize": [2, 2],
-                        "overrideSize": [4, 2],
+                        "resource": "code/fbdemo_circle/gCircleTex",
+                        "asset": "code/fbdemo_circle/gCircleTex.png",
+                        "originalSize": [64, 64],
+                        "overrideSize": [64, 64],
                         "styleMode": "material-blend",
                     },
                     {
                         "resource": "objects/test/palette",
                         "asset": "objects/test/palette.rgb5a1.png",
-                        "originalSize": [2, 2],
-                        "overrideSize": [2, 2],
+                        "originalSize": [2, 1],
+                        "overrideSize": [2, 1],
                         "styleMode": "native-palette-preserve",
                     },
                 ]
             }), encoding="utf-8")
+            decomp_xml = write_decomp(root / "decomp")
+            output = root / "fresh.o2r"
 
-            decomp = make_decomp_xml(root / "decomp")
-            stats = build_archive(source, output, packbuild, manifest, decomp)
+            stats = build_archive(output, packbuild, manifest, decomp_xml)
             self.assertEqual(stats["built-v1-rgba32-from-png"], 1)
-            self.assertEqual(stats["preserved-native-palette"], 1)
+            self.assertEqual(stats["built-v0-rgba16-palette-from-png"], 1)
 
-            with zipfile.ZipFile(source) as original, zipfile.ZipFile(output) as built:
-                self.assertEqual(built.namelist(), original.namelist())
-                self.assertEqual(built.read("portVersion"), PORT_VERSION)
-                self.assertEqual(built.read("objects/test/palette"), palette_template)
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(archive.namelist(), [
+                    "portVersion",
+                    "code/fbdemo_circle/gCircleTex",
+                    "objects/test/palette",
+                ])
+                self.assertEqual(archive.read("portVersion"), PORT_VERSION)
 
-                result = built.read("objects/test/sample")
-                self.assertEqual(struct.unpack_from("<I", result, 8)[0], 1)
-                texture_type, width, height, flags = struct.unpack_from("<IIII", result, 0x40)
-                h_scale, v_scale = struct.unpack_from("<ff", result, 0x50)
-                data_size = struct.unpack_from("<I", result, 0x58)[0]
-                self.assertEqual((texture_type, width, height), (1, 4, 2))
+                rgba_resource = archive.read("code/fbdemo_circle/gCircleTex")
+                self.assertEqual(rgba_resource[0], 0)
+                self.assertEqual(rgba_resource[1], 0)
+                self.assertEqual(struct.unpack_from("<I", rgba_resource, 4)[0], OTEX_MAGIC)
+                self.assertEqual(struct.unpack_from("<I", rgba_resource, 8)[0], 1)
+                tex_type, width, height, flags = struct.unpack_from("<IIII", rgba_resource, 0x40)
+                h_scale, v_scale = struct.unpack_from("<ff", rgba_resource, 0x50)
+                data_size = struct.unpack_from("<I", rgba_resource, 0x58)[0]
+                self.assertEqual((tex_type, width, height), (1, 64, 64))
                 self.assertEqual(flags, TEX_FLAG_LOAD_AS_RAW)
-                self.assertEqual(flags, 0x01)
-                self.assertAlmostEqual(h_scale, 4.0)  # 2x width scale * RGBA16->RGBA32 byte scale
+                self.assertAlmostEqual(h_scale, 8.0)  # i4 source row -> RGBA32 row
                 self.assertAlmostEqual(v_scale, 1.0)
-                self.assertEqual(data_size, 32)
-                self.assertEqual(result[0x5C:], rgba)
+                self.assertEqual(data_size, 64 * 64 * 4)
+                self.assertEqual(rgba_resource[0x5C:], rgba)
 
+                palette_resource = archive.read("objects/test/palette")
+                self.assertEqual(struct.unpack_from("<I", palette_resource, 8)[0], 0)
+                self.assertEqual(struct.unpack_from("<IIII", palette_resource, 0x40), (2, 2, 1, 4))
+                # RGBA5551 is high-byte first: FC01, then 0030.
+                self.assertEqual(palette_resource[0x50:], bytes.fromhex("FC01003E"))
 
-    def test_rejects_manifest_archive_dimension_mismatch(self):
+    def test_unresolved_format_is_reported_and_not_guessed(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            (root / "PackBuild" / "objects/test").mkdir(parents=True)
-            Image.new("RGBA", (4, 2)).save(root / "PackBuild/objects/test/sample.rgba32.png")
-            source = root / "source.o2r"
-            with zipfile.ZipFile(source, "w") as archive:
-                archive.writestr("portVersion", PORT_VERSION)
-                archive.writestr("objects/test/sample", make_v0(1, 8, 2, bytes(8 * 2 * 4)))
+            packbuild = root / "PackBuild"
+            asset = packbuild / "unknown/texture.png"
+            asset.parent.mkdir(parents=True)
+            Image.new("RGBA", (2, 2), (1, 2, 3, 255)).save(asset)
             manifest = root / "manifest.json"
             manifest.write_text(json.dumps({"entries": [{
-                "resource": "objects/test/sample",
-                "asset": "objects/test/sample.rgba32.png",
+                "resource": "unknown/texture",
+                "asset": "unknown/texture.png",
                 "originalSize": [2, 2],
-                "overrideSize": [4, 2],
+                "overrideSize": [2, 2],
             }]}), encoding="utf-8")
-            decomp = make_decomp_xml(root / "decomp")
-            with self.assertRaisesRegex(ValueError, "template dimensions"):
-                build_archive(source, root / "output.o2r", root / "PackBuild", manifest, decomp)
+            xml_root = root / "decomp" / "assets" / "xml"
+            xml_root.mkdir(parents=True)
+            report = root / "unresolved.txt"
+            stats = build_archive(
+                root / "out.o2r", packbuild, manifest, xml_root,
+                unresolved_report=report,
+            )
+            self.assertEqual(stats["skipped-unresolved-format"], 1)
+            self.assertEqual(report.read_text(encoding="utf-8"), "unknown/texture\n")
+            with zipfile.ZipFile(root / "out.o2r") as archive:
+                self.assertEqual(archive.namelist(), ["portVersion"])
+
+    def test_legacy_archive_only_preserves_unresolved_weapon_resources(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            packbuild = root / "PackBuild"
+            asset = packbuild / "objects/object_gi_bow/bow.png"
+            asset.parent.mkdir(parents=True)
+            Image.new("RGBA", (2, 2), (1, 2, 3, 255)).save(asset)
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"entries": [{
+                "resource": "objects/object_gi_bow/object_gi_bowTex",
+                "asset": "objects/object_gi_bow/bow.png",
+                "originalSize": [2, 2],
+                "overrideSize": [2, 2],
+            }]}), encoding="utf-8")
+            xml_root = root / "decomp" / "assets" / "xml"
+            xml_root.mkdir(parents=True)
+            legacy = make_common_header(0) + struct.pack("<IIII", 1, 2, 2, 16) + bytes(16)
+            fallback = root / "legacy.o2r"
+            with zipfile.ZipFile(fallback, "w") as archive:
+                archive.writestr("objects/object_gi_bow/object_gi_bowTex", legacy)
+            output = root / "out.o2r"
+            stats = build_archive(
+                output, packbuild, manifest, xml_root, None, fallback,
+            )
+            self.assertEqual(stats["preserved-legacy-weapon-resource"], 1)
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(
+                    archive.read("objects/object_gi_bow/object_gi_bowTex"), legacy
+                )
 
 
 if __name__ == "__main__":
