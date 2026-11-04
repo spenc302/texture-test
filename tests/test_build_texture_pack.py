@@ -101,7 +101,7 @@ class DirectPackBuildTests(unittest.TestCase):
                 h_scale, v_scale = struct.unpack_from("<ff", result, 0x50)
                 data_size = struct.unpack_from("<I", result, 0x58)[0]
                 self.assertEqual((texture_type, width, height), (1, 4, 2))
-                self.assertEqual(flags, TEX_FLAG_LOAD_AS_IMG)
+                self.assertEqual(flags, TEX_FLAG_LOAD_AS_RAW)
                 self.assertEqual(flags, 0x01)
                 self.assertAlmostEqual(h_scale, 4.0)  # 2x width scale * RGBA16->RGBA32 byte scale
                 self.assertAlmostEqual(v_scale, 1.0)
