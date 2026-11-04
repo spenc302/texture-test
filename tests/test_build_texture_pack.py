@@ -12,6 +12,8 @@ from tools.build_texture_pack import (
     PORT_VERSION,
     TEX_FLAG_LOAD_AS_RAW,
     build_archive,
+    load_original_formats,
+    resolve_original_formats,
 )
 
 
@@ -108,6 +110,56 @@ class DirectPackBuildTests(unittest.TestCase):
                 self.assertEqual(data_size, 32)
                 self.assertEqual(result[0x5C:], rgba)
 
+
+    def test_overlay_xml_uses_full_overlays_resource_prefix(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "decomp" / "assets" / "xml"
+            overlays = root / "overlays"
+            overlays.mkdir(parents=True)
+            (overlays / "ovl_Arrow_Fire.xml").write_text(
+                '<Root><File Name="ovl_Arrow_Fire">'
+                '<Texture Name="gFireArrowTex" Format="i8" Offset="0xAB0"/>'
+                '</File></Root>',
+                encoding="utf-8",
+            )
+            formats = load_original_formats(root)
+            self.assertEqual(formats["overlays/ovl_Arrow_Fire/gFireArrowTex"], "i8")
+
+    def test_overflow_resource_resolves_to_base_xml_texture(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "decomp" / "assets" / "xml"
+            objects = root / "objects"
+            objects.mkdir(parents=True)
+            (objects / "test.xml").write_text(
+                '<Root><File Name="test"><Texture Name="gTexture" Format="rgba16"/></File></Root>',
+                encoding="utf-8",
+            )
+            resolved, from_c = resolve_original_formats(
+                root, ["objects/test/gTexture_Overflow"]
+            )
+            self.assertEqual(resolved["objects/test/gTexture_Overflow"], "rgba16")
+            self.assertEqual(from_c, 0)
+
+    def test_c_display_list_format_is_used_when_xml_has_no_texture_entry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            decomp = Path(temp) / "decomp"
+            xml = decomp / "assets" / "xml"
+            (xml / "objects").mkdir(parents=True)
+            (xml / "objects" / "empty.xml").write_text(
+                '<Root><File Name="empty"></File></Root>', encoding="utf-8"
+            )
+            source = decomp / "src" / "code"
+            source.mkdir(parents=True)
+            (source / "test.c").write_text(
+                'gsDPLoadTextureBlock(gSceneTexture, G_IM_FMT_IA, G_IM_SIZ_8b, '
+                '32, 32, 0, G_TX_WRAP, G_TX_WRAP, 5, 5, G_TX_NOLOD, G_TX_NOLOD);',
+                encoding="utf-8",
+            )
+            resolved, from_c = resolve_original_formats(
+                xml, ["scenes/nonmq/TEST/gSceneTexture"]
+            )
+            self.assertEqual(resolved["scenes/nonmq/TEST/gSceneTexture"], "ia8")
+            self.assertEqual(from_c, 1)
 
     def test_rejects_manifest_archive_dimension_mismatch(self):
         with tempfile.TemporaryDirectory() as temp:
