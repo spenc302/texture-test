@@ -315,7 +315,8 @@ def build_archive(
             if expected_version == 1:
                 if struct.unpack_from("<I", data, 0x4C)[0] != TEX_FLAG_LOAD_AS_RAW:
                     raise RuntimeError(f"{name}: RGBA32 resource is not LOAD_AS_RAW")
-                width, height, size = struct.unpack_from("<III", data, 0x44)
+                width, height = struct.unpack_from("<II", data, 0x44)
+                size = struct.unpack_from("<I", data, 0x58)[0]
                 if size != width * height * 4 or len(data) != V1_PIXEL_OFFSET + size:
                     raise RuntimeError(f"{name}: invalid RGBA32 payload length")
             else:
