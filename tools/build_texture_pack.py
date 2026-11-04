@@ -72,14 +72,19 @@ def load_manifest(path: str | Path) -> list[dict[str, Any]]:
     return entries
 
 
-def _resource_archive_name(file_name: str, out_name: str | None, group: str) -> str:
+def _resource_archive_name(
+    file_name: str, out_name: str | None, directory_parts: tuple[str, ...]
+) -> str:
     archive = out_name or file_name
     if archive.endswith(".unarchive"):
         archive = archive[:-10]
     if out_name:
         archive = file_name + "/" + archive
-    if group in {"code", "misc", "objects", "overlays", "scenes"} and not archive.startswith(group + "/"):
-        archive = group + "/" + archive
+    # XML nesting is meaningful: scenes/nonmq/KAKUSIANA.xml maps to
+    # scenes/nonmq/KAKUSIANA, not merely KAKUSIANA.
+    prefix = "/".join(directory_parts)
+    if prefix and not archive.startswith(prefix + "/"):
+        archive = prefix + "/" + archive
     return archive
 
 
@@ -101,12 +106,12 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
             xml = ET.parse(xml_path).getroot()
         except ET.ParseError as exc:
             raise ValueError(f"Invalid decomp XML {xml_path}: {exc}") from exc
-        group = xml_path.parent.name
+        directory_parts = xml_path.parent.relative_to(root).parts
         for file_node in xml.findall(".//File"):
             file_name = file_node.get("Name")
             if not file_name:
                 continue
-            archive = _resource_archive_name(file_name, file_node.get("OutName"), group)
+            archive = _resource_archive_name(file_name, file_node.get("OutName"), directory_parts)
             for texture in file_node.findall(".//Texture"):
                 fmt = (texture.get("Format") or "").lower()
                 if fmt not in BYTES_PER_PIXEL:
