@@ -7,7 +7,7 @@ on:
     paths:
       - 'tools/build_retro_texture_pack.dart'
       - 'MajorasMask_UnrealInspired_FullReskin/PackBuild/**'
-      - 'MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json'
+      - 'MajorasMask_UnrealInspired_FullReskin/Retro_Source_Manifest.json'
       - 'MajorasMask_UnrealInspired_FullReskin/Retro_Texture_Manifest.json'
       - '.github/workflows/package-lfs-texture.yml'
 
