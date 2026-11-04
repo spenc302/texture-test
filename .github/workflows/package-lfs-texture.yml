@@ -35,15 +35,15 @@ jobs:
         uses: actions/checkout@v4
         # Deliberately no Git LFS checkout and no old O2R template.
 
-      - name: Check out authoritative Majora's Mask format metadata
+      - name: Check out Majora's Mask N64 extraction metadata
         uses: actions/checkout@v4
         with:
-          repository: zeldaret/mm
-          ref: main
+          repository: 2ship2harkinian/2ship2harkinian
+          ref: develop
           path: decomp
           sparse-checkout: |
-            assets/xml
-            src
+            mm/assets/xml/N64_US
+            mm/src
           sparse-checkout-cone-mode: true
 
       - name: Set up Python
@@ -62,7 +62,8 @@ jobs:
           python tools/build_texture_pack.py \
             --packbuild MajorasMask_UnrealInspired_FullReskin/PackBuild \
             --manifest MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json \
-            --decomp-assets decomp/assets/xml \
+            --decomp-assets decomp/mm/assets/xml/N64_US \
+            --decomp-source-root decomp/mm \
             --output texture-pack-v1.o2r
 
       - name: Verify generated O2R
