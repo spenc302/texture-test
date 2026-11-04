@@ -30,6 +30,15 @@ jobs:
         with:
           lfs: true
 
+      - name: Check out authoritative Majora's Mask texture format XML
+        uses: actions/checkout@v4
+        with:
+          repository: zeldaret/mm
+          ref: main
+          path: decomp
+          sparse-checkout: assets/xml
+          sparse-checkout-cone-mode: true
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -60,6 +69,7 @@ jobs:
             --source-o2r MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r \
             --packbuild MajorasMask_UnrealInspired_FullReskin/PackBuild \
             --manifest MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json \
+            --decomp-assets decomp/assets/xml \
             --output texture-pack-v1.o2r
 
       - name: Verify final O2R archive
