@@ -34,9 +34,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: zeldaret/mm
-          ref: main
+          ref: 710e1a7d50a1f987f5fc55abca37f7fdcc8ee43d
           path: decomp
-          sparse-checkout: assets/xml
+          sparse-checkout: |
+            assets/xml
+            src
           sparse-checkout-cone-mode: true
 
       - name: Set up Python
