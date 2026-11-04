@@ -88,7 +88,7 @@ def _resource_archive_name(
     return archive
 
 
-def load_original_formats(xml_root: str | Path) -> dict[str, str]:
+def load_original_formats(xml_root: str | Path, source_root: str | Path | None = None) -> dict[str, str]:
     """Index formats from ZAPD XML and aliases from C arrays' included assets."""
     root = Path(xml_root)
     if not root.is_dir():
@@ -147,7 +147,7 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
     # A C symbol may be declared in a different source file from the display
     # list that references it. Resolve the declaration's included ZAPD asset,
     # e.g. gCircleTex -> assets/code/circle_tex/circle.i4.inc.c.
-    decomp_root = root.parent.parent
+    decomp_root = Path(source_root) if source_root is not None else root.parent.parent
     source_roots = [decomp_root / "src", decomp_root / "include"]
     symbol_formats: dict[str, str] = {}
     include_pattern = re.compile(
@@ -180,19 +180,11 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
 
 
 def original_format_for(resource: str, formats: dict[str, str]) -> str | None:
-    # Some extracted O2R entries have an _Overflow suffix when the resource
-    # exceeds the normal texture allocation. The source texture keeps its
-    # original XML/C symbol and format.
-    candidates = [resource]
-    while candidates[-1].endswith("_Overflow"):
-        candidates.append(candidates[-1][:-len("_Overflow")])
-    for candidate in candidates:
-        if candidate in formats:
-            return formats[candidate]
-        basename = candidate.rsplit("/", 1)[-1]
-        if basename in formats:
-            return formats[basename]
-    return None
+    # Do not collapse _Overflow resources onto their base texture: an
+    # overflow view can intentionally use a different source format.
+    if resource in formats:
+        return formats[resource]
+    return formats.get(resource.rsplit("/", 1)[-1])
 
 
 def make_common_header(resource_version: int) -> bytes:
@@ -279,11 +271,12 @@ def build_archive(
     packbuild_root: str | Path,
     manifest_path: str | Path,
     decomp_assets_root: str | Path,
+    decomp_source_root: str | Path | None = None,
 ) -> collections.Counter:
     output_archive = Path(output_archive)
     packbuild_root = Path(packbuild_root)
     entries = load_manifest(manifest_path)
-    original_formats = load_original_formats(decomp_assets_root)
+    original_formats = load_original_formats(decomp_assets_root, decomp_source_root)
     palette_entries = [e for e in entries if e.get("styleMode") == "native-palette-preserve"]
     rgba_entries = [e for e in entries if e.get("styleMode") != "native-palette-preserve"]
     missing_formats = sorted(
@@ -366,11 +359,14 @@ def main() -> None:
     pack_root = root / "MajorasMask_UnrealInspired_FullReskin"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", default="texture-pack-v1.o2r")
-    parser.add_argument("--decomp-assets", required=True, help="zeldaret/mm assets/xml directory")
+    parser.add_argument("--decomp-assets", required=True, help="Majora's Mask N64 XML directory")
+    parser.add_argument("--decomp-source-root", help="Repository root containing src/ and include/")
     parser.add_argument("--packbuild", default=str(pack_root / "PackBuild"))
     parser.add_argument("--manifest", default=str(pack_root / "Overrides_Manifest.json"))
     args = parser.parse_args()
-    stats = build_archive(args.output, args.packbuild, args.manifest, args.decomp_assets)
+    stats = build_archive(
+        args.output, args.packbuild, args.manifest, args.decomp_assets, args.decomp_source_root
+    )
     print("Fresh O2R build complete (no source archive used):")
     for name in sorted(stats):
         print(f"  {name}: {stats[name]}")
