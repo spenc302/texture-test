@@ -30,16 +30,17 @@ Build pipeline
 --------------
 The final Quest O2R is built directly from the generated PackBuild PNGs by
 `tools/build_texture_pack.py`. It does not run the old archive-wide V0-to-V1
-conversion pass. For each RGBA32 replacement, the builder reads the PNG pixels and writes
-an OTEX V1 RGBA32 resource using the engine's `TEX_FLAG_LOAD_AS_IMG` path.
-This is the image-upload mode used by a separately tested 2Ship texture-pack
-implementation: it uploads the complete replacement image and does not need
-the original N64 format, row pitch, or inferred HByteScale. The V1 scale
-fields are set to 1.0. This avoids guessing formats for anonymous scene,
-room, and overlay resources.
+conversion pass. Each RGBA32 replacement is written as an OTEX V1 resource
+using the engine's `TEX_FLAG_LOAD_AS_RAW` path. The builder resolves the
+original N64 pixel format and dimensions from the pinned 2Ship metadata, then
+calculates `HByteScale` and `VPixelScale` for the RGBA32 replacement. This
+preserves the runtime's tile-aware row-stride and partial-load behavior;
+`LOAD_AS_IMG` would bypass that path.
 
-The 855 entries marked `native-palette-preserve` are not regenerated from their
-RGB5A1 PNG inspection assets. Their original archive resources, including any
-alignment padding, are copied byte-for-byte. Resource names/order and the
-portVersion marker are verified after writing. The workflow runs the direct
+The 855 entries marked `native-palette-preserve` remain native V0 RGBA16
+resources. Before preserving each resource byte-for-byte, the builder
+re-encodes its checked-in RGB5A1 PNG and verifies that it exactly reproduces
+the original big-endian palette bytes. This checks the source palette assets
+without changing their runtime representation. Resource names/order and the
+`portVersion` marker are verified after writing. The workflow runs the direct
 builder regression tests before packaging the artifact.
