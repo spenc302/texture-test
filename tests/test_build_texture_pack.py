@@ -28,9 +28,9 @@ def write_decomp(root: Path) -> Path:
     source = root / "src" / "code"
     source.mkdir(parents=True)
     (source / "z_circle_tex.c").write_text(
-        'const u64 gCircleTex[] = {\\n'
-        '#include "assets/code/circle_tex/circle.i4.inc.c"\\n'
-        '};\\n',
+        'const u64 gCircleTex[] = {\n'
+        '#include "assets/code/circle_tex/circle.i4.inc.c"\n'
+        '};\n',
         encoding="utf-8",
     )
     return xml_root
