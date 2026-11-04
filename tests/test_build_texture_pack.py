@@ -42,7 +42,7 @@ class FreshPackBuildTests(unittest.TestCase):
     def test_common_header_matches_otr_exporter_layout(self):
         header = make_common_header(1)
         self.assertEqual(len(header), 0x40)
-        self.assertEqual(header[:4], b"\\x00\\x00\\x00\\x00")
+        self.assertEqual(header[:4], bytes(4))
         self.assertEqual(struct.unpack_from("<I", header, 4)[0], OTEX_MAGIC)
         self.assertEqual(struct.unpack_from("<I", header, 8)[0], 1)
         self.assertEqual(struct.unpack_from("<Q", header, 0x0C)[0], 0x00000000DEADBEEF)
