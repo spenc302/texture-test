@@ -111,7 +111,14 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
             file_name = file_node.get("Name")
             if not file_name:
                 continue
-            archive = _resource_archive_name(file_name, file_node.get("OutName"), directory_parts)
+            resource_dirs = directory_parts
+            if directory_parts and directory_parts[0] == "scenes":
+                # Scene XMLs live in assets/xml/scenes/<scene>/<scene>.xml,
+                # while O2R keys are scenes/nonmq/<File Name> or scenes/mq/<File Name>.
+                game = (file_node.get("Game") or "MM").upper()
+                mode = "mq" if game == "MQ" else "nonmq"
+                resource_dirs = ("scenes", mode)
+            archive = _resource_archive_name(file_name, file_node.get("OutName"), resource_dirs)
             for texture in file_node.findall(".//Texture"):
                 fmt = (texture.get("Format") or "").lower()
                 if fmt not in BYTES_PER_PIXEL:
