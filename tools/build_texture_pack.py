@@ -333,7 +333,7 @@ def build_archive(
             data = check.read(name)  # validates ZIP CRC
             if len(data) < V0_PIXEL_OFFSET:
                 raise RuntimeError(f"{name}: truncated OTEX resource")
-            if data[0] != 0 or data[1] != 1:
+            if data[0] != 0 or data[1] != 0:
                 raise RuntimeError(f"{name}: invalid common resource header")
             if struct.unpack_from("<I", data, 4)[0] != OTEX_MAGIC:
                 raise RuntimeError(f"{name}: invalid OTEX FourCC")
