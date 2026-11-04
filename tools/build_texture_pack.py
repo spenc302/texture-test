@@ -125,18 +125,92 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
     return formats
 
 
-def resolve_original_formats(xml_root: str | Path, resources: list[str]) -> tuple[dict[str, str], int]:
+PORT_TEXTURE_TYPE_FORMATS = {
+    # Values are the ZAPD TextureType enum from ZAPD/ZTexture.h, used by
+    # 2Ship's generated per-resource texture metadata.
+    1: "rgba32",
+    2: "rgba16",
+    3: "ci4",
+    4: "ci8",
+    5: "i4",
+    6: "i8",
+    7: "ia4",
+    8: "ia8",
+    9: "ia16",
+}
+
+
+def load_port_texture_formats(
+    metadata_path: str | Path,
+    resources: list[str],
+    expected_sizes: dict[str, tuple[int, int]] | None = None,
+) -> dict[str, str]:
+    """Read authoritative 2Ship per-resource texture type and dimensions."""
+    with open(metadata_path, "r", encoding="utf-8") as stream:
+        metadata = json.load(stream)
+    if not isinstance(metadata, dict):
+        raise ValueError(f"{metadata_path}: 2Ship texture metadata must be a JSON object")
+
+    formats: dict[str, str] = {}
+    missing: list[str] = []
+    for resource in resources:
+        record = metadata.get(resource)
+        if not isinstance(record, dict):
+            missing.append(resource)
+            continue
+        texture_type = record.get("textureType")
+        fmt = PORT_TEXTURE_TYPE_FORMATS.get(texture_type)
+        if fmt is None:
+            raise ValueError(f"{resource}: unsupported 2Ship textureType {texture_type!r}")
+        width, height = record.get("textureWidth"), record.get("textureHeight")
+        if not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
+            raise ValueError(f"{resource}: invalid 2Ship dimensions {width!r}x{height!r}")
+        if expected_sizes and resource in expected_sizes:
+            expected = expected_sizes[resource]
+            if (width, height) != tuple(expected):
+                raise ValueError(
+                    f"{resource}: 2Ship original dimensions {width}x{height} "
+                    f"do not match Overrides_Manifest originalSize {expected}"
+                )
+        formats[resource] = fmt
+
+    if missing:
+        raise ValueError(
+            f"{metadata_path}: missing {len(missing)} manifest resources; "
+            f"examples: {missing[:20]}"
+        )
+    return formats
+
+
+def resolve_original_formats(
+    xml_root: str | Path,
+    resources: list[str],
+    port_metadata_path: str | Path | None = None,
+    expected_sizes: dict[str, tuple[int, int]] | None = None,
+) -> tuple[dict[str, str], int, int]:
     """Resolve manifest resources from XML, then exact C display-list texture symbols."""
+    port_formats: dict[str, str] = {}
+    if port_metadata_path is not None:
+        port_formats = load_port_texture_formats(
+            port_metadata_path, resources, expected_sizes
+        )
+        if len(port_formats) == len(resources):
+            return port_formats, 0, len(port_formats)
+
     xml_formats = load_original_formats(xml_root)
     c_formats, ambiguous_c_formats = load_c_texture_formats(xml_root)
-    resolved: dict[str, str] = {}
+    resolved: dict[str, str] = dict(port_formats)
     from_c = 0
+    from_xml = 0
     missing: list[str] = []
 
     for resource in resources:
+        if resource in resolved:
+            continue
         base_resource = resource[:-len("_Overflow")] if resource.endswith("_Overflow") else resource
         if base_resource in xml_formats:
             resolved[resource] = xml_formats[base_resource]
+            from_xml += 1
             continue
         symbol = base_resource.rsplit("/", 1)[-1]
         if symbol in ambiguous_c_formats:
@@ -152,7 +226,7 @@ def resolve_original_formats(xml_root: str | Path, resources: list[str]) -> tupl
             f"Missing original N64 formats for {len(missing)} RGBA32 resources; "
             f"examples: {missing[:20]}"
         )
-    return resolved, from_c
+    return resolved, from_c, len(port_formats)
 
 
 def _split_c_arguments(arguments: str) -> list[str]:
@@ -339,6 +413,7 @@ def build_archive(
     packbuild_root: str | Path,
     manifest_path: str | Path,
     decomp_assets_root: str | Path,
+    port_metadata_path: str | Path | None = None,
 ) -> collections.Counter:
     source_archive = Path(source_archive)
     output_archive = Path(output_archive)
@@ -354,11 +429,16 @@ def build_archive(
     }
     rgba_entries = {key: value for key, value in manifest_by_resource.items() if key not in palette_entries}
 
-    original_formats, c_format_resolutions = resolve_original_formats(
-        decomp_assets_root, sorted(rgba_entries)
+    original_formats, c_format_resolutions, port_format_resolutions = resolve_original_formats(
+        decomp_assets_root,
+        sorted(rgba_entries),
+        port_metadata_path,
+        {key: tuple(value["originalSize"]) for key, value in rgba_entries.items()},
     )
 
     stats: collections.Counter = collections.Counter()
+    if port_format_resolutions:
+        stats["formats-resolved-from-2ship-metadata"] = port_format_resolutions
     if c_format_resolutions:
         stats["formats-resolved-from-c-source"] = c_format_resolutions
     with zipfile.ZipFile(source_archive, "r") as source:
@@ -458,6 +538,9 @@ def main() -> None:
     )
     parser.add_argument("--output", default="texture-pack-v1.o2r", help="final O2R output path")
     parser.add_argument("--decomp-assets", required=True, help="zeldaret/mm assets/xml directory")
+    parser.add_argument(
+        "--port-metadata", help="2Ship per-resource texture metadata JSON (textureType/width/height)"
+    )
     parser.add_argument("--packbuild", default=str(pack_root / "PackBuild"), help="PackBuild PNG root")
     parser.add_argument(
         "--manifest", default=str(pack_root / "Overrides_Manifest.json"),
@@ -465,7 +548,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    stats = build_archive(args.source_o2r, args.output, args.packbuild, args.manifest, args.decomp_assets)
+    stats = build_archive(
+        args.source_o2r, args.output, args.packbuild, args.manifest,
+        args.decomp_assets, args.port_metadata,
+    )
     print("PackBuild -> OTEX V1 LOAD_AS_RAW O2R build complete:")
     for name in sorted(stats):
         print(f"  {name}: {stats[name]}")
