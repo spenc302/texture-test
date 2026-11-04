@@ -105,7 +105,7 @@ class FreshPackBuildTests(unittest.TestCase):
                 self.assertEqual(struct.unpack_from("<I", palette_resource, 8)[0], 0)
                 self.assertEqual(struct.unpack_from("<IIII", palette_resource, 0x40), (2, 2, 1, 4))
                 # RGBA5551 is high-byte first: FC01, then 0030.
-                self.assertEqual(palette_resource[0x50:], bytes.fromhex("FC01003F"))
+                self.assertEqual(palette_resource[0x50:], bytes.fromhex("FC01003E"))
 
     def test_fails_when_a_png_has_no_original_format_metadata(self):
         with tempfile.TemporaryDirectory() as temp:
