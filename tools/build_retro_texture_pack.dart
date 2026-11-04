@@ -97,7 +97,7 @@ Future<void> main(List<String> args) async {
   final limit = int.tryParse(options['limit'] ?? '');
 
   if (!sourceRoot.existsSync() ||
-      !File(p.join(sourceRoot.path, 'Overrides_Manifest.json')).existsSync() ||
+      !File(p.join(sourceRoot.path, 'Retro_Source_Manifest.json')).existsSync() ||
       !metadataFile.existsSync() ||
       outputPath.isEmpty) {
     throw ArgumentError(
@@ -106,7 +106,7 @@ Future<void> main(List<String> args) async {
   }
 
   final overrides = jsonDecode(
-    await File(p.join(sourceRoot.path, 'Overrides_Manifest.json')).readAsString(),
+    await File(p.join(sourceRoot.path, 'Retro_Source_Manifest.json')).readAsString(),
   ) as Map<String, dynamic>;
   final entries = (overrides['entries'] as List).cast<Map<String, dynamic>>();
   final metadata = jsonDecode(await metadataFile.readAsString())
@@ -114,6 +114,12 @@ Future<void> main(List<String> args) async {
 
   if (entries.isEmpty || metadata.isEmpty) {
     throw FormatException('The source or Retro texture manifest is empty');
+  }
+  if (entries.length != metadata.length) {
+    throw FormatException(
+      'Filtered source manifest and Retro metadata counts differ: ' +
+      entries.length.toString() + ' vs ' + metadata.length.toString(),
+    );
   }
 
   final outputFile = File(outputPath);
@@ -124,7 +130,6 @@ Future<void> main(List<String> args) async {
 
   final encoder = ZipFileEncoder()..create(outputPath);
   final builtResources = <String>{};
-  var skipped = 0;
   var builtV0 = 0;
   var builtV1 = 0;
   var built = 0;
@@ -134,8 +139,7 @@ Future<void> main(List<String> args) async {
       final resource = entry['resource'] as String;
       final rawMeta = metadata[resource];
       if (rawMeta == null) {
-        skipped++;
-        continue;
+        throw FormatException(resource + ': missing canonical Retro metadata');
       }
       if (limit != null && built >= limit) {
         break;
@@ -233,6 +237,6 @@ Future<void> main(List<String> args) async {
   stdout.writeln('Built resources: ' + built.toString());
   stdout.writeln('V0 native-format resources: ' + builtV0.toString());
   stdout.writeln('V1 raw-upload resources: ' + builtV1.toString());
-  stdout.writeln('Excluded source entries: ' + skipped.toString());
+  stdout.writeln('Eligible source entries: ' + entries.length.toString());
   stdout.writeln('Archive bytes: ' + outputFile.lengthSync().toString());
 }
