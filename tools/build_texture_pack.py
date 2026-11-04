@@ -273,12 +273,25 @@ def _zip_info(name: str) -> zipfile.ZipInfo:
     return info
 
 
+def _is_weapon_resource(resource: str) -> bool:
+    """Identify weapon assets eligible for byte-preserving legacy fallback."""
+    return bool(re.search(
+        r"(?:^|[/_])(?:bow|arrow|sword|shield|bomb|hookshot|hammer|boomerang|"
+        r"deku_stick|razor|gilded|great_fairy_sword|kokiri_sword|master_sword|"
+        r"fierce_deity_sword)(?:[/_.]|$)",
+        resource,
+        re.IGNORECASE,
+    ))
+
+
 def build_archive(
     output_archive: str | Path,
     packbuild_root: str | Path,
     manifest_path: str | Path,
     decomp_assets_root: str | Path,
     decomp_source_root: str | Path | None = None,
+    fallback_archive: str | Path | None = None,
+    unresolved_report: str | Path | None = None,
 ) -> collections.Counter:
     output_archive = Path(output_archive)
     packbuild_root = Path(packbuild_root)
@@ -290,47 +303,76 @@ def build_archive(
         e["resource"] for e in rgba_entries
         if original_format_for(e["resource"], original_formats) not in BYTES_PER_PIXEL
     )
-    if missing_formats:
-        raise ValueError(
-            f"Missing original N64 formats for {len(missing_formats)} RGBA32 resources; "
-            f"examples={missing_formats[:20]}"
-        )
-
+    missing_format_set = set(missing_formats)
     stats: collections.Counter = collections.Counter()
+    built_entries: list[dict[str, Any]] = []
+    unresolved: list[str] = []
     output_archive.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(output_archive, "w", allowZip64=True) as output:
-        output.writestr(_zip_info("portVersion"), PORT_VERSION)
-        stats["port-marker"] += 1
-        for entry in entries:
-            resource = entry["resource"]
-            asset_path = packbuild_root / entry["asset"]
-            if not asset_path.is_file():
-                raise FileNotFoundError(f"{resource}: missing PackBuild asset {asset_path}")
-            with Image.open(asset_path) as source_image:
-                source_image.load()
-                image = source_image.copy()
-            if entry.get("styleMode") == "native-palette-preserve":
-                converted = make_v0_rgba16_palette(resource, image, entry)
-                stats["built-v0-rgba16-palette-from-png"] += 1
-            else:
-                rgba_pixels = image.convert("RGBA").tobytes()
-                converted = make_v1_rgba32(
-                    resource, rgba_pixels, image.size, entry, original_formats
-                )
-                stats["built-v1-rgba32-from-png"] += 1
-            output.writestr(_zip_info(resource), converted)
 
-    # Re-open and fully CRC-check every entry; then validate each generated
-    # resource header, payload size, and texture version.
+    fallback = zipfile.ZipFile(fallback_archive, "r") if fallback_archive else None
+    try:
+        fallback_names = set(fallback.namelist()) if fallback else set()
+        with zipfile.ZipFile(output_archive, "w", allowZip64=True) as output:
+            output.writestr(_zip_info("portVersion"), PORT_VERSION)
+            stats["port-marker"] += 1
+            for entry in entries:
+                resource = entry["resource"]
+                if resource in missing_format_set:
+                    # Do not guess source formats. Preserve only clearly named
+                    # weapon resources from the explicitly supplied legacy O2R.
+                    if fallback and _is_weapon_resource(resource) and resource in fallback_names:
+                        legacy_data = fallback.read(resource)
+                        if (len(legacy_data) < V0_PIXEL_OFFSET or legacy_data[0] != 0
+                                or legacy_data[1] != 0
+                                or struct.unpack_from("<I", legacy_data, 4)[0] != OTEX_MAGIC):
+                            raise ValueError(
+                                f"{resource}: legacy fallback is not a valid OTEX resource"
+                            )
+                        output.writestr(_zip_info(resource), legacy_data)
+                        stats["preserved-legacy-weapon-resource"] += 1
+                        built_entries.append(entry)
+                    else:
+                        unresolved.append(resource)
+                        stats["skipped-unresolved-format"] += 1
+                    continue
+
+                asset_path = packbuild_root / entry["asset"]
+                if not asset_path.is_file():
+                    raise FileNotFoundError(f"{resource}: missing PackBuild asset {asset_path}")
+                with Image.open(asset_path) as source_image:
+                    source_image.load()
+                    image = source_image.copy()
+                if entry.get("styleMode") == "native-palette-preserve":
+                    converted = make_v0_rgba16_palette(resource, image, entry)
+                    stats["built-v0-rgba16-palette-from-png"] += 1
+                else:
+                    rgba_pixels = image.convert("RGBA").tobytes()
+                    converted = make_v1_rgba32(
+                        resource, rgba_pixels, image.size, entry, original_formats
+                    )
+                    stats["built-v1-rgba32-from-png"] += 1
+                output.writestr(_zip_info(resource), converted)
+                built_entries.append(entry)
+    finally:
+        if fallback:
+            fallback.close()
+
+    # Re-open and CRC-check all entries. Validate newly generated OTEX data;
+    # legacy weapon entries are preserved byte-for-byte, not reinterpreted.
     with zipfile.ZipFile(output_archive, "r") as check:
-        expected_names = ["portVersion"] + [e["resource"] for e in entries]
+        expected_names = ["portVersion"] + [e["resource"] for e in built_entries]
         if check.namelist() != expected_names:
-            raise RuntimeError("Generated O2R resource names/order differ from manifest")
+            raise RuntimeError("Generated O2R resource names/order differ from built entries")
         if check.read("portVersion") != PORT_VERSION:
             raise RuntimeError("Generated O2R has an invalid portVersion marker")
-        for entry in entries:
+        legacy_weapon_names = {
+            e["resource"] for e in built_entries if e["resource"] in missing_format_set
+        }
+        for entry in built_entries:
             name = entry["resource"]
-            data = check.read(name)  # validates ZIP CRC
+            data = check.read(name)
+            if name in legacy_weapon_names:
+                continue
             if len(data) < V0_PIXEL_OFFSET:
                 raise RuntimeError(f"{name}: truncated OTEX resource")
             if data[0] != 0 or data[1] != 0:
@@ -354,10 +396,22 @@ def build_archive(
                 if len(data) != V0_PIXEL_OFFSET + size:
                     raise RuntimeError(f"{name}: invalid RGBA16 palette resource length")
 
-    if stats["built-v1-rgba32-from-png"] != len(rgba_entries):
-        raise RuntimeError("Not all RGBA32 manifest entries were built")
+    accounted_rgba = (
+        stats["built-v1-rgba32-from-png"] +
+        stats["preserved-legacy-weapon-resource"] +
+        stats["skipped-unresolved-format"]
+    )
+    if accounted_rgba != len(rgba_entries):
+        raise RuntimeError("RGBA32 manifest entries were not fully accounted for")
     if stats["built-v0-rgba16-palette-from-png"] != len(palette_entries):
         raise RuntimeError("Not all native palette manifest entries were built")
+    if unresolved_report:
+        report_path = Path(unresolved_report)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            "\n".join(unresolved) + ("\n" if unresolved else ""),
+            encoding="utf-8",
+        )
     return stats
 
 
@@ -370,11 +424,14 @@ def main() -> None:
     parser.add_argument("--decomp-source-root", help="Repository root containing src/ and include/")
     parser.add_argument("--packbuild", default=str(pack_root / "PackBuild"))
     parser.add_argument("--manifest", default=str(pack_root / "Overrides_Manifest.json"))
+    parser.add_argument("--fallback-archive", help="Optional legacy O2R used only for unresolved weapon resources")
+    parser.add_argument("--unresolved-report", default="unresolved-texture-formats.txt")
     args = parser.parse_args()
     stats = build_archive(
-        args.output, args.packbuild, args.manifest, args.decomp_assets, args.decomp_source_root
+        args.output, args.packbuild, args.manifest, args.decomp_assets,
+        args.decomp_source_root, args.fallback_archive, args.unresolved_report
     )
-    print("Fresh O2R build complete (no source archive used):")
+    print("Fresh O2R build complete (known formats rebuilt; unresolved resources reported):")
     for name in sorted(stats):
         print(f"  {name}: {stats[name]}")
     print(f"Output size: {os.path.getsize(args.output):,} bytes")
