@@ -149,7 +149,7 @@ class FreshPackBuildTests(unittest.TestCase):
                 unresolved_report=report,
             )
             self.assertEqual(stats["skipped-unresolved-format"], 1)
-            self.assertEqual(report.read_text(encoding="utf-8"), "unknown/texture\\n")
+            self.assertEqual(report.read_text(encoding="utf-8"), "unknown/texture\n")
             with zipfile.ZipFile(root / "out.o2r") as archive:
                 self.assertEqual(archive.namelist(), ["portVersion"])
 
