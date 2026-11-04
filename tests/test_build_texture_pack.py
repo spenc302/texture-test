@@ -127,7 +127,7 @@ class FreshPackBuildTests(unittest.TestCase):
                 # RGBA5551 is high-byte first: FC01, then 0030.
                 self.assertEqual(palette_resource[0x50:], bytes.fromhex("FC01003E"))
 
-    def test_fails_when_a_png_has_no_original_format_metadata(self):
+    def test_unresolved_format_is_reported_and_not_guessed(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             packbuild = root / "PackBuild"
@@ -143,8 +143,45 @@ class FreshPackBuildTests(unittest.TestCase):
             }]}), encoding="utf-8")
             xml_root = root / "decomp" / "assets" / "xml"
             xml_root.mkdir(parents=True)
-            with self.assertRaisesRegex(ValueError, "Missing original N64 formats"):
-                build_archive(root / "out.o2r", packbuild, manifest, xml_root)
+            report = root / "unresolved.txt"
+            stats = build_archive(
+                root / "out.o2r", packbuild, manifest, xml_root,
+                unresolved_report=report,
+            )
+            self.assertEqual(stats["skipped-unresolved-format"], 1)
+            self.assertEqual(report.read_text(encoding="utf-8"), "unknown/texture\\n")
+            with zipfile.ZipFile(root / "out.o2r") as archive:
+                self.assertEqual(archive.namelist(), ["portVersion"])
+
+    def test_legacy_archive_only_preserves_unresolved_weapon_resources(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            packbuild = root / "PackBuild"
+            asset = packbuild / "objects/object_gi_bow/bow.png"
+            asset.parent.mkdir(parents=True)
+            Image.new("RGBA", (2, 2), (1, 2, 3, 255)).save(asset)
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"entries": [{
+                "resource": "objects/object_gi_bow/object_gi_bowTex",
+                "asset": "objects/object_gi_bow/bow.png",
+                "originalSize": [2, 2],
+                "overrideSize": [2, 2],
+            }]}), encoding="utf-8")
+            xml_root = root / "decomp" / "assets" / "xml"
+            xml_root.mkdir(parents=True)
+            legacy = make_common_header(0) + struct.pack("<IIII", 1, 2, 2, 16) + bytes(16)
+            fallback = root / "legacy.o2r"
+            with zipfile.ZipFile(fallback, "w") as archive:
+                archive.writestr("objects/object_gi_bow/object_gi_bowTex", legacy)
+            output = root / "out.o2r"
+            stats = build_archive(
+                output, packbuild, manifest, xml_root, None, fallback,
+            )
+            self.assertEqual(stats["preserved-legacy-weapon-resource"], 1)
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(
+                    archive.read("objects/object_gi_bow/object_gi_bowTex"), legacy
+                )
 
 
 if __name__ == "__main__":
