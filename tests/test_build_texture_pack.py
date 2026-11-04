@@ -12,6 +12,7 @@ from tools.build_texture_pack import (
     PORT_VERSION,
     TEX_FLAG_LOAD_AS_RAW,
     build_archive,
+    make_common_header,
     original_format_for,
 )
 
@@ -38,6 +39,15 @@ def write_decomp(root: Path) -> Path:
 
 
 class FreshPackBuildTests(unittest.TestCase):
+    def test_common_header_matches_otr_exporter_layout(self):
+        header = make_common_header(1)
+        self.assertEqual(len(header), 0x40)
+        self.assertEqual(header[:4], b"\\x00\\x00\\x00\\x00")
+        self.assertEqual(struct.unpack_from("<I", header, 4)[0], OTEX_MAGIC)
+        self.assertEqual(struct.unpack_from("<I", header, 8)[0], 1)
+        self.assertEqual(struct.unpack_from("<Q", header, 0x0C)[0], 0x00000000DEADBEEF)
+        self.assertEqual(header[0x14:0x20], bytes(12))
+
     def test_overflow_resource_keeps_its_own_format(self):
         formats = {
             "objects/example/exampleTex": "i4",
