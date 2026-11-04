@@ -49,6 +49,12 @@ jobs:
       - name: Install PNG decoder
         run: python -m pip install --disable-pip-version-check Pillow
 
+      - name: Download pinned 2Ship per-resource texture metadata
+        run: |
+          curl --fail --location --retry 3 --output 2ship-texture-metadata.json \
+            "https://raw.githubusercontent.com/GhostlyDark/MM-Reloaded/6750fb02b3ee22a9d3b0ec617cd24fd639191d26/ZELDA%20MAJORA'S%20MASK/Ports/2%20Ship%202%20Harkinian/manifest.json"
+          python -c "import json; d=json.load(open('2ship-texture-metadata.json')); print(f'Loaded {len(d):,} 2Ship texture metadata records')"
+
       - name: Run direct-builder regression tests
         run: python -m unittest discover -s tests -v
 
@@ -72,6 +78,7 @@ jobs:
             --packbuild MajorasMask_UnrealInspired_FullReskin/PackBuild \
             --manifest MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json \
             --decomp-assets decomp/assets/xml \
+            --port-metadata 2ship-texture-metadata.json \
             --output texture-pack-v1.o2r
 
       - name: Verify final O2R archive
