@@ -12,6 +12,7 @@ from tools.build_texture_pack import (
     PORT_VERSION,
     TEX_FLAG_LOAD_AS_RAW,
     build_archive,
+    original_format_for,
 )
 
 
@@ -37,6 +38,15 @@ def write_decomp(root: Path) -> Path:
 
 
 class FreshPackBuildTests(unittest.TestCase):
+    def test_overflow_resource_keeps_its_own_format(self):
+        formats = {
+            "objects/example/exampleTex": "i4",
+            "objects/example/exampleTex_Overflow": "i8",
+        }
+        self.assertEqual(
+            original_format_for("objects/example/exampleTex_Overflow", formats), "i8"
+        )
+
     def test_builds_rgba32_raw_and_reconstructs_rgba16_palette(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
