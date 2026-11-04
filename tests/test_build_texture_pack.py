@@ -188,7 +188,7 @@ class DirectPackBuildTests(unittest.TestCase):
                 '32, 32, 0, G_TX_WRAP, G_TX_WRAP, 5, 5, G_TX_NOLOD, G_TX_NOLOD);',
                 encoding="utf-8",
             )
-            resolved, from_c = resolve_original_formats(
+            resolved, from_c, from_port = resolve_original_formats(
                 xml, ["scenes/nonmq/TEST/gSceneTexture"]
             )
             self.assertEqual(resolved["scenes/nonmq/TEST/gSceneTexture"], "ia8")
