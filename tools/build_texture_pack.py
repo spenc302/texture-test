@@ -111,13 +111,19 @@ def load_original_formats(xml_root: str | Path) -> dict[str, str]:
             file_name = file_node.get("Name")
             if not file_name:
                 continue
-            resource_dirs = directory_parts
-            if directory_parts and directory_parts[0] == "scenes":
+            resource_dirs: tuple[str, ...] = ()
+            if directory_parts and directory_parts[0] in {"code", "misc", "objects", "overlays"}:
+                # These XML folders are also the first O2R resource path segment.
+                resource_dirs = (directory_parts[0],)
+            elif directory_parts and directory_parts[0] == "scenes":
                 # Scene XMLs live in assets/xml/scenes/<scene>/<scene>.xml,
                 # while O2R keys are scenes/nonmq/<File Name> or scenes/mq/<File Name>.
                 game = (file_node.get("Game") or "MM").upper()
                 mode = "mq" if game == "MQ" else "nonmq"
                 resource_dirs = ("scenes", mode)
+            # interface/, archives/, and boot/ are XML organization folders,
+            # not O2R path prefixes (e.g. interface/do_action_static.xml ->
+            # do_action_static/<texture>).
             archive = _resource_archive_name(file_name, file_node.get("OutName"), resource_dirs)
             for texture in file_node.findall(".//Texture"):
                 fmt = (texture.get("Format") or "").lower()
