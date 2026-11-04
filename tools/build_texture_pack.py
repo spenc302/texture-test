@@ -188,14 +188,21 @@ def original_format_for(resource: str, formats: dict[str, str]) -> str | None:
 
 
 def make_common_header(resource_version: int) -> bytes:
-    """Create the standard 64-byte little-endian OTR resource header."""
+    """Create the standard OTR header used by OTRExporter::WriteHeader."""
     header = bytearray(COMMON_HEADER_SIZE)
-    header[0] = 0  # little-endian resource fields
-    header[1] = 1  # custom/mod resource
+    header[0] = 0  # Endianness::Little
+    header[1] = 0  # isCustom (OTRExporter writes false for texture resources)
+    header[2] = 0
+    header[3] = 0
     struct.pack_into("<I", header, 4, OTEX_MAGIC)
     struct.pack_into("<I", header, 8, resource_version)
     struct.pack_into("<Q", header, 0x0C, RESOURCE_ID)
-    # Remaining legacy/ROM/padding fields are reserved and remain zero.
+    # OTRExporter writes resourceVersions[OTEX] at 0x10. Texture version
+    # registration currently uses 0; this intentionally overwrites the upper
+    # four bytes of the legacy 64-bit ID field, matching the native writer.
+    struct.pack_into("<I", header, 0x10, 0)
+    struct.pack_into("<Q", header, 0x14, 0)  # ROM CRC
+    struct.pack_into("<I", header, 0x1C, 0)  # ROM enum
     return bytes(header)
 
 
