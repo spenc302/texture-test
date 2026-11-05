@@ -111,7 +111,7 @@ class IndexedPaletteRepairTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "indexed.png"
             Image.fromarray(np.array([[[0, 0, 0, 255], [1, 1, 1, 255]]], dtype=np.uint8), "RGBA").save(path)
-            indices = decode_indexed_pixels(b"\\x00\\x01", 2, 1, "ci8")
+            indices = decode_indexed_pixels(bytes([0, 1]), 2, 1, "ci8")
             palette = np.array([[255, 0, 0, 255], [0, 255, 0, 255]], dtype=np.uint8)
             colorize_index_png(path, palette, "ci8", indices)
             with Image.open(path) as image:
