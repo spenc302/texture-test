@@ -153,7 +153,29 @@ def choose_palette(entry, direct, carried, source_names):
     raise ValueError(f"{resource}: cannot resolve among original palettes {candidates}")
 
 
-def colorize_index_png(png_path: Path, palette: np.ndarray, n64_format: str) -> None:
+def decode_indexed_pixels(data: bytes, width: int, height: int, n64_format: str) -> np.ndarray:
+    if n64_format not in CI_BITS:
+        raise ValueError(f"unsupported indexed format {n64_format}")
+    count = width * height
+    if n64_format == "ci8":
+        if len(data) != count:
+            raise ValueError(f"CI8 payload has {len(data)} bytes, expected {count}")
+        return np.frombuffer(data, dtype=np.uint8).reshape(height, width).copy()
+    if len(data) != (count + 1) // 2:
+        raise ValueError(f"CI4 payload has {len(data)} bytes, expected {(count + 1) // 2}")
+    packed = np.frombuffer(data, dtype=np.uint8)
+    indices = np.empty(len(packed) * 2, dtype=np.uint8)
+    indices[0::2] = packed >> 4
+    indices[1::2] = packed & 0x0F
+    return indices[:count].reshape(height, width)
+
+
+def colorize_index_png(
+    png_path: Path,
+    palette: np.ndarray,
+    n64_format: str,
+    source_indices: np.ndarray | None = None,
+) -> None:
     if n64_format not in CI_BITS:
         raise ValueError(f"{png_path}: unsupported indexed format {n64_format}")
     with Image.open(png_path) as image:
@@ -161,11 +183,19 @@ def colorize_index_png(png_path: Path, palette: np.ndarray, n64_format: str) -> 
         rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
     if not (np.array_equal(rgba[..., 0], rgba[..., 1]) and np.array_equal(rgba[..., 0], rgba[..., 2])):
         raise ValueError(f"{png_path}: expected a greyscale palette-index map")
-    values = rgba[..., 0].astype(np.uint16)
-    if n64_format == "ci4":
-        indices = (values >> 4).astype(np.int64)
+    if source_indices is not None:
+        scale = 17 if n64_format == "ci4" else 1
+        expected = Image.fromarray((source_indices.astype(np.uint16) * scale).astype(np.uint8), "L")
+        expected = np.asarray(expected.resize((rgba.shape[1], rgba.shape[0]), Image.Resampling.NEAREST))
+        if not np.array_equal(rgba[..., 0], expected):
+            raise ValueError(f"{png_path}: greyscale map does not match original indexed texels")
+        indices = Image.fromarray(source_indices.astype(np.uint8), "L").resize(
+            (rgba.shape[1], rgba.shape[0]), Image.Resampling.NEAREST
+        )
+        indices = np.asarray(indices, dtype=np.int64)
     else:
-        indices = values.astype(np.int64)
+        values = rgba[..., 0].astype(np.uint16)
+        indices = (values >> 4).astype(np.int64) if n64_format == "ci4" else values.astype(np.int64)
     # CI8 resources can use banked 16-entry TLUTs; repeat the native palette
     # exactly as the clean-room decoder does (index i -> entry i modulo N).
     indices %= len(palette)
@@ -220,8 +250,10 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
                 None,
             )
             palette = decode_rgba16_palette(archive.read(palette_name), expected_entries)
+            source_pixels = source[HDR + 16:HDR + 16 + data_size]
+            source_indices = decode_indexed_pixels(source_pixels, width, height, fmt)
             try:
-                colorize_index_png(png_path, palette, fmt)
+                colorize_index_png(png_path, palette, fmt, source_indices)
             except ValueError as exc:
                 stats["unresolved-index-map"] += 1
                 print(f"UNRESOLVED INDEX MAP: {exc}")
