@@ -190,10 +190,15 @@ def colorize_index_png(
     if not (np.array_equal(rgba[..., 0], rgba[..., 1]) and np.array_equal(rgba[..., 0], rgba[..., 2])):
         raise ValueError(f"{png_path}: expected a greyscale palette-index map")
     if source_indices is not None:
-        scale = 17 if n64_format == "ci4" else 1
-        expected = Image.fromarray((source_indices.astype(np.uint16) * scale).astype(np.uint8), "L")
-        expected = np.asarray(expected.resize((rgba.shape[1], rgba.shape[0]), Image.Resampling.NEAREST))
-        if not np.array_equal(rgba[..., 0], expected):
+        scales = (1, 16, 17) if n64_format == "ci4" else (1,)
+        matches_source = False
+        for scale in scales:
+            expected = Image.fromarray((source_indices.astype(np.uint16) * scale).astype(np.uint8), "L")
+            expected = np.asarray(expected.resize((rgba.shape[1], rgba.shape[0]), Image.Resampling.NEAREST))
+            if np.array_equal(rgba[..., 0], expected):
+                matches_source = True
+                break
+        if not matches_source:
             raise ValueError(f"{png_path}: greyscale map does not match original indexed texels")
         indices = Image.fromarray(source_indices.astype(np.uint8), "L").resize(
             (rgba.shape[1], rgba.shape[0]), Image.Resampling.NEAREST
