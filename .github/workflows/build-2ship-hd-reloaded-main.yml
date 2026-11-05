@@ -5,7 +5,7 @@ on:
   push:
     branches: [main]
     paths:
-      - '.github/workflows/build-2ship-hd-reloaded-v2.yml'
+      - '.github/workflows/build-2ship-hd-reloaded-main.yml'
       - 'tools/**'
       - 'tests/**'
       - 'MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json'
@@ -131,17 +131,17 @@ jobs:
 
       - name: Verify final O2R archive
         run: |
-          test -s texture-pack-v2.o2r
-          python -m zipfile -t texture-pack-v2.o2r
-          ls -lh texture-pack-v2.o2r
-          sha256sum texture-pack-v2.o2r
+          test -s texture-pack-main.o2r
+          python -m zipfile -t texture-pack-main.o2r
+          ls -lh texture-pack-main.o2r
+          sha256sum texture-pack-main.o2r
 
-      - name: Publish 2.0 O2R and source layout report
+      - name: Publish main O2R and source layout report
         uses: actions/upload-artifact@v4
         with:
           name: texture-pack-main-mm-reloaded-hd-o2r
           path: |
-            texture-pack-v2.o2r
+            texture-pack-main.o2r
             upstream-layout-report.json
           if-no-files-found: error
           compression-level: 0
