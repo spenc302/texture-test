@@ -3,7 +3,7 @@ name: Build 2.0 from MM-Reloaded 2Ship HD O2R
 on:
   workflow_dispatch:
   push:
-    branches: [2.0]
+    branches: ["2.0"]
     paths:
       - '.github/workflows/build-2ship-hd-reloaded-v2.yml'
       - 'tools/**'
