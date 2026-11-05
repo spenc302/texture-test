@@ -130,17 +130,22 @@ def choose_palette(entry, direct, carried, source_names, palette_names):
     resource = entry["resource"]
     candidates = [item["resource"] for item in entry.get("paletteResources", [])]
     if not candidates:
-        # Some code-loaded textures (notably the owl eye set) are not linked
-        # in the clean-room usage index. A unique local TLUT is still exact.
-        folder = resource.rsplit("/", 1)[0]
-        local = []
-        for name in palette_names:
-            if name.rsplit("/", 1)[0] != folder:
-                continue
-            data_type = name.rsplit("/", 1)[-1].upper()
-            if "TLUT" in data_type or "PAL" in data_type:
-                local.append(name)
-        candidates = sorted(local)
+        # Recover code-loaded or otherwise unindexed associations from the
+        # actual display-list use first; only then fall back to a unique local TLUT.
+        observed = direct.get(resource, collections.Counter())
+        if not observed:
+            observed = carried.get(resource, collections.Counter())
+        candidates = [name for name in observed if name in palette_names]
+        if not candidates:
+            folder = resource.rsplit("/", 1)[0]
+            local = []
+            for name in palette_names:
+                if name.rsplit("/", 1)[0] != folder:
+                    continue
+                data_type = name.rsplit("/", 1)[-1].upper()
+                if "TLUT" in data_type or "PAL" in data_type:
+                    local.append(name)
+            candidates = sorted(local)
 
     counts = direct.get(resource, collections.Counter())
     if not counts:
