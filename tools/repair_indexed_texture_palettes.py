@@ -20,6 +20,7 @@ from PIL import Image
 
 HDR = 0x40
 OTEX_MAGIC = 0x4F544558
+OTEX_TYPE_RGBA32 = 1
 OTEX_TYPE_RGBA16 = 2
 OTEX_TYPE_CI4 = 3
 OTEX_TYPE_CI8 = 4
@@ -246,16 +247,39 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
             if resource_type(source) != "OTEX" or len(source) < HDR + 16:
                 raise ValueError(f"{resource}: source is not an OTEX texture")
             texture_type, width, height, data_size = struct.unpack_from("<4I", source, HDR)
-            expected_type = OTEX_TYPE_CI4 if fmt == "ci4" else OTEX_TYPE_CI8
-            if texture_type != expected_type:
-                raise ValueError(f"{resource}: source OTEX type {texture_type} does not match {fmt}")
-            expected_bytes = (width * height + (1 if fmt == "ci4" else 0)) // (2 if fmt == "ci4" else 1)
-            if data_size != expected_bytes:
-                raise ValueError(f"{resource}: source indexed payload has {data_size} bytes, expected {expected_bytes}")
             if entry.get("originalSize") != [width, height]:
                 raise ValueError(
                     f"{resource}: index originalSize {entry.get('originalSize')} "
                     f"does not match source dimensions {[width, height]}"
+                )
+
+            # The checked-in O2R is an RGBA32-converted template, even when
+            # the repair index records the original N64 CI4/CI8 format.
+            # Only decode source indices when the archive actually retains
+            # an indexed OTEX payload; otherwise use the greyscale PackBuild
+            # index map directly and still colour it with the original TLUT.
+            source_indices = None
+            if texture_type in (OTEX_TYPE_CI4, OTEX_TYPE_CI8):
+                expected_type = OTEX_TYPE_CI4 if fmt == "ci4" else OTEX_TYPE_CI8
+                if texture_type != expected_type:
+                    raise ValueError(
+                        f"{resource}: source OTEX indexed type {texture_type} does not match {fmt}"
+                    )
+                expected_bytes = (width * height + (1 if fmt == "ci4" else 0)) // (2 if fmt == "ci4" else 1)
+                if data_size != expected_bytes:
+                    raise ValueError(
+                        f"{resource}: source indexed payload has {data_size} bytes, expected {expected_bytes}"
+                    )
+                source_pixels = source[HDR + 16:HDR + 16 + data_size]
+                source_indices = decode_indexed_pixels(source_pixels, width, height, fmt)
+            elif texture_type == OTEX_TYPE_RGBA32:
+                if data_size != width * height * 4:
+                    raise ValueError(
+                        f"{resource}: source RGBA32 payload has {data_size} bytes, expected {width * height * 4}"
+                    )
+            else:
+                raise ValueError(
+                    f"{resource}: unsupported source OTEX type {texture_type} for indexed {fmt} repair"
                 )
 
             try:
@@ -271,8 +295,6 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
                 None,
             )
             palette = decode_rgba16_palette(archive.read(palette_name), expected_entries)
-            source_pixels = source[HDR + 16:HDR + 16 + data_size]
-            source_indices = decode_indexed_pixels(source_pixels, width, height, fmt)
             with Image.open(png_path) as image:
                 if list(image.size) != entry.get("overrideSize"):
                     raise ValueError(
