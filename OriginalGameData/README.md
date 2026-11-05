@@ -38,11 +38,15 @@ The three unresolved resources are:
 
 The 832 mapped candidates and their exact source resource paths, native formats, dimensions, replacement assets, and palette associations are recorded in `indexed_texture_repair_index.json`.
 
+### Repair implementation
+
+The PackBuild PNGs are full-colour RGBA reskin artwork, not greyscale CI index maps. Their RGB values cannot be interpreted as original CI indices. The repair therefore transfers the original grid's spatial chroma into each PackBuild image using a YCbCr colour transfer: PackBuild luminance and alpha remain intact, preserving its linework, shading, and texture detail. `material-blend` uses the original grid chroma fully; `subtle-preserve` blends it at 35% to retain more of the artwork's existing colour. The repair validates each grid's native dimensions against the indexed-texture metadata and validates the associated palette resource in the source O2R before applying it.
+
 ### Why the 38 multiple-palette cases need special handling
 
 Some CI textures are reused with different TLUTs in different game contexts. Replacing one such resource with a single RGBA32 image discards that context-dependent palette choice. Do not arbitrarily bake the first palette into those 38 resources. They need per-use review or must retain their indexed/palette-aware runtime behaviour.
 
-For the 794 single-palette candidates, the clean-room `textures.json` has a palette-aware coarse colour grid that can be used to restore the missing base colour while retaining the existing PackBuild artwork's detail. The grid is intentionally lossy; it is not a replacement for the original texel data. The three owl-eye resources need a display-list/XML/object-level palette investigation before changing them.
+For the 794 single-palette candidates, the clean-room `textures.json` palette-aware coarse colour grids are now checked into `indexed_texture_colour_grids.json` and consumed by `tools/repair_indexed_texture_palettes.py`. The grid is intentionally lossy; it restores broad original colour character, not exact original texels. The 38 multi-palette assets remain unchanged, and the three owl-eye resources still need a display-list/XML/object-level palette investigation.
 
 ## OTEX and archive compatibility
 
@@ -53,7 +57,7 @@ The current texture builder emits OTEX V1 RGBA32 resources using `TEX_FLAG_LOAD_
 ## Next texture repair pass
 
 1. Use `indexed_texture_repair_index.json` to isolate the 835 known CI fallbacks.
-2. Rebuild the 794 single-palette assets from the clean-room palette-aware coarse grid plus the existing PackBuild detail, preserving alpha and the current output dimensions.
+2. Transfer the 794 single-palette clean-room colour grids onto the existing PackBuild artwork, preserving its luminance detail, alpha, and current output dimensions.
 3. Leave the 38 multi-palette assets unchanged until their context-specific use is resolved.
 4. Investigate the three owl-eye resources using the original display lists and object-local TLUT rules.
 5. Rebuild the final V1 O2R and validate its ZIP structure, `portVersion`, resource names/order, OTEX V1 headers, and palette preservation before enabling it in VR.
