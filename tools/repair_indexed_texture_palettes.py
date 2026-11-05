@@ -239,8 +239,6 @@ def colorize_from_coarse_grid(png_path: Path, grid_data: dict, style_mode: str) 
     grid = grid.reshape(side, side, 4)
     with Image.open(png_path) as image:
         rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
-    if [rgba.shape[1], rgba.shape[0]] != [grid_data.get("overrideWidth", rgba.shape[1]), grid_data.get("overrideHeight", rgba.shape[0])]:
-        raise ValueError(f"{png_path}: invalid grid target dimensions")
     colour = np.asarray(
         Image.fromarray(np.clip(grid[..., :3], 0, 255).astype(np.uint8), "RGB").resize(
             (rgba.shape[1], rgba.shape[0]), Image.Resampling.BILINEAR
@@ -365,6 +363,10 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
             if grid_data is None:
                 stats["unresolved-colour-grid"] += 1
                 print(f"UNRESOLVED COLOUR GRID: {resource}")
+                continue
+            if [grid_data.get("w"), grid_data.get("h")] != entry.get("originalSize"):
+                stats["unresolved-colour-grid"] += 1
+                print(f"UNRESOLVED COLOUR GRID: {resource}: source grid dimensions do not match indexed originalSize")
                 continue
             try:
                 colorize_from_coarse_grid(png_path, grid_data, entry.get("styleMode", "material-blend"))
