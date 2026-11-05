@@ -26,7 +26,6 @@ from build_texture_pack import (
     V1_PIXEL_OFFSET,
     PORT_VERSION,
     TEX_FLAG_LOAD_AS_RAW,
-    encode_rgb5a1_png,
     load_manifest,
     resolve_original_formats,
     _zip_info_like,
@@ -40,6 +39,8 @@ def build_rgba32(template: bytes, resource: str, pixels: bytes,
     version = struct.unpack_from("<I", template, 8)[0]
     if version not in (0, 1):
         raise ValueError(f"{resource}: unsupported OTEX version {version}")
+    if version == 1 and len(template) < V1_PIXEL_OFFSET:
+        raise ValueError(f"{resource}: truncated OTEX V1 template")
     texture_type = struct.unpack_from("<I", template, OTEX_HEADER_SIZE)[0]
     if texture_type != 1:
         raise ValueError(f"{resource}: expected RGBA32 resource, found texture type {texture_type}")
@@ -99,12 +100,12 @@ def overlay(base_path: str, fallback_path: str, output_path: str,
             for info in base.infolist():
                 name = info.filename
                 original = base.read(name)
-                if name not in by_name:
-                    converted = original
-                    stats["preserved-upstream-resource"] += 1
-                elif name == "portVersion":
+                if name == "portVersion":
                     converted = original
                     stats["preserved-port-version"] += 1
+                elif name not in by_name:
+                    converted = original
+                    stats["preserved-upstream-resource"] += 1
                 elif name in palettes:
                     converted = original
                     stats["preserved-upstream-native-palette"] += 1
