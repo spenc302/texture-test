@@ -79,10 +79,16 @@ def collect_palette_usage(archive: zipfile.ZipFile):
     direct = collections.defaultdict(collections.Counter)
     carried = collections.defaultdict(collections.Counter)
     last_palette_by_room = {}
+    palette_names = set()
 
     for name in sorted(names):
         data = archive.read(name)
-        if resource_type(data) != "ODLT":
+        kind = resource_type(data)
+        if kind == "OTEX" and len(data) >= HDR + 16:
+            texture_type = struct.unpack_from("<I", data, HDR)[0]
+            if texture_type == OTEX_TYPE_RGBA16:
+                palette_names.add(name)
+        if kind != "ODLT":
             continue
         room = re.sub(r"(DL|Set)_?[0-9A-Fa-f]{4,}.*$", "", name)
         for texture_hash, palette_hash in display_list_texture_uses(data):
@@ -96,7 +102,7 @@ def collect_palette_usage(archive: zipfile.ZipFile):
                     last_palette_by_room[room] = palette
             elif room in last_palette_by_room:
                 carried[texture][last_palette_by_room[room]] += 1
-    return direct, carried, names
+    return direct, carried, names, palette_names
 
 
 def decode_rgba16_palette(data: bytes, expected_entries: int | None = None) -> np.ndarray:
@@ -120,7 +126,7 @@ def decode_rgba16_palette(data: bytes, expected_entries: int | None = None) -> n
     return rgba
 
 
-def choose_palette(entry, direct, carried, source_names):
+def choose_palette(entry, direct, carried, source_names, palette_names):
     resource = entry["resource"]
     candidates = [item["resource"] for item in entry.get("paletteResources", [])]
     if not candidates:
@@ -128,13 +134,13 @@ def choose_palette(entry, direct, carried, source_names):
         # in the clean-room usage index. A unique local TLUT is still exact.
         folder = resource.rsplit("/", 1)[0]
         local = []
-        for name in source_names:
+        for name in palette_names:
             if name.rsplit("/", 1)[0] != folder:
                 continue
             data_type = name.rsplit("/", 1)[-1].upper()
             if "TLUT" in data_type or "PAL" in data_type:
                 local.append(name)
-        candidates = local
+        candidates = sorted(local)
 
     counts = direct.get(resource, collections.Counter())
     if not counts:
@@ -213,7 +219,7 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
 
     stats = collections.Counter()
     with zipfile.ZipFile(source_o2r, "r") as archive:
-        direct, carried, source_names = collect_palette_usage(archive)
+        direct, carried, source_names, palette_names = collect_palette_usage(archive)
         source_name_set = set(source_names)
         for entry in entries:
             resource = entry["resource"]
@@ -236,9 +242,14 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
             expected_bytes = (width * height + (1 if fmt == "ci4" else 0)) // (2 if fmt == "ci4" else 1)
             if data_size != expected_bytes:
                 raise ValueError(f"{resource}: source indexed payload has {data_size} bytes, expected {expected_bytes}")
+            if entry.get("originalSize") != [width, height]:
+                raise ValueError(
+                    f"{resource}: index originalSize {entry.get('originalSize')} "
+                    f"does not match source dimensions {[width, height]}"
+                )
 
             try:
-                palette_name = choose_palette(entry, direct, carried, source_names)
+                palette_name = choose_palette(entry, direct, carried, source_names, palette_names)
             except ValueError as exc:
                 stats["unresolved-palette"] += 1
                 print(f"UNRESOLVED PALETTE: {exc}")
@@ -252,6 +263,12 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
             palette = decode_rgba16_palette(archive.read(palette_name), expected_entries)
             source_pixels = source[HDR + 16:HDR + 16 + data_size]
             source_indices = decode_indexed_pixels(source_pixels, width, height, fmt)
+            with Image.open(png_path) as image:
+                if list(image.size) != entry.get("overrideSize"):
+                    raise ValueError(
+                        f"{resource}: PackBuild dimensions {list(image.size)} "
+                        f"do not match index overrideSize {entry.get('overrideSize')}"
+                    )
             try:
                 colorize_index_png(png_path, palette, fmt, source_indices)
             except ValueError as exc:
