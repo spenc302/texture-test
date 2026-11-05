@@ -18,7 +18,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from build_texture_pack import (
+try:
+    from .build_texture_pack import (
     BYTES_PER_PIXEL,
     OTEX_MAGIC,
     OTEX_HEADER_SIZE,
@@ -28,8 +29,14 @@ from build_texture_pack import (
     TEX_FLAG_LOAD_AS_RAW,
     load_manifest,
     resolve_original_formats,
-    _zip_info_like,
-)
+        _zip_info_like,
+    )
+except ImportError:  # Direct script execution from tools/ also needs to work.
+    from build_texture_pack import (
+        BYTES_PER_PIXEL, OTEX_MAGIC, OTEX_HEADER_SIZE, V0_PIXEL_OFFSET,
+        V1_PIXEL_OFFSET, PORT_VERSION, TEX_FLAG_LOAD_AS_RAW, load_manifest,
+        resolve_original_formats, _zip_info_like,
+    )
 
 def build_rgba32(template: bytes, resource: str, pixels: bytes,
                  image_size: tuple[int, int], entry: dict,
