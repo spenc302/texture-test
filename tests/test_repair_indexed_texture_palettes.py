@@ -80,7 +80,7 @@ class IndexedPaletteRepairTests(unittest.TestCase):
                 archive.writestr(dl_b, make_display_list(palette_b, texture))
                 archive.writestr("objects/test/test_DL_0002", make_display_list(palette_a, texture))
             with zipfile.ZipFile(archive_path) as archive:
-                direct, carried, names = collect_palette_usage(archive)
+                direct, carried, names, palette_names = collect_palette_usage(archive)
             self.assertEqual(direct[texture][palette_a], 2)
             self.assertEqual(direct[texture][palette_b], 1)
             entry = {
@@ -90,7 +90,7 @@ class IndexedPaletteRepairTests(unittest.TestCase):
                     {"resource": palette_b, "entries": 16},
                 ],
             }
-            self.assertEqual(choose_palette(entry, direct, carried, names), palette_a)
+            self.assertEqual(choose_palette(entry, direct, carried, names, palette_names), palette_a)
 
     def test_rgba16_palette_decodes_big_endian_rgb5a1(self):
         # Red opaque and green transparent.
