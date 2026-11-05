@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Restore indexed PackBuild fallbacks with their original N64 TLUT colours.
+"""Restore original colour character to indexed-texture PackBuild artwork.
 
-The checked-in PackBuild PNGs for CI textures store palette indices as greyscale.
-This pass maps those indices through the original RGBA16 palette resources from
-the V0 source O2R before the normal OTEX V1 builder packages them.
+PackBuild PNGs are reskinned RGBA artwork, not recoverable palette-index maps.
+This pass transfers the palette-decoded original coarse colour grid onto the
+artwork chroma while retaining the artwork luminance, detail, and alpha.
 """
 from __future__ import annotations
 
@@ -228,13 +228,58 @@ def colorize_index_png(
     Image.fromarray(output, "RGBA").save(png_path)
 
 
-def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, index_path: str | Path):
+def colorize_from_coarse_grid(png_path: Path, grid_data: dict, style_mode: str) -> None:
+    """Transfer original palette colour from a coarse grid, preserving PackBuild detail."""
+    grid = np.asarray(grid_data.get("grid"), dtype=np.float32)
+    if grid.ndim != 2 or grid.shape[1] != 4 or not len(grid):
+        raise ValueError(f"{png_path}: invalid original colour grid")
+    side = int(round(len(grid) ** 0.5))
+    if side * side != len(grid):
+        raise ValueError(f"{png_path}: colour grid is not square")
+    grid = grid.reshape(side, side, 4)
+    with Image.open(png_path) as image:
+        rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
+    if [rgba.shape[1], rgba.shape[0]] != [grid_data.get("overrideWidth", rgba.shape[1]), grid_data.get("overrideHeight", rgba.shape[0])]:
+        raise ValueError(f"{png_path}: invalid grid target dimensions")
+    colour = np.asarray(
+        Image.fromarray(np.clip(grid[..., :3], 0, 255).astype(np.uint8), "RGB").resize(
+            (rgba.shape[1], rgba.shape[0]), Image.Resampling.BILINEAR
+        ), dtype=np.float32
+    )
+    art = rgba[..., :3].astype(np.float32)
+    # YCbCr transfer: keep the PackBuild luminance (linework, highlights,
+    # texture and shading) and transfer only the original palette's chroma.
+    def to_ycc(rgb):
+        y = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+        cb = (rgb[..., 2] - y) / 1.772
+        cr = (rgb[..., 0] - y) / 1.402
+        return y, cb, cr
+    ay, acb, acr = to_ycc(art)
+    _gy, gcb, gcr = to_ycc(colour)
+    strength = {"material-blend": 1.0, "subtle-preserve": 0.35}.get(style_mode)
+    if strength is None:
+        raise ValueError(f"{png_path}: unknown style mode {style_mode!r}")
+    # Retain a little of the artwork's own colour to avoid flattening intentional accents.
+    cb = acb * (1.0 - strength) + gcb * strength
+    cr = acr * (1.0 - strength) + gcr * strength
+    red = ay + 1.402 * cr
+    blue = ay + 1.772 * cb
+    green = (ay - 0.299 * red - 0.114 * blue) / 0.587
+    output = np.stack([red, green, blue], axis=-1)
+    output = np.clip(np.rint(output), 0, 255).astype(np.uint8)
+    result = np.dstack([output, rgba[..., 3]])
+    Image.fromarray(result, "RGBA").save(png_path)
+
+
+def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, index_path: str | Path, texture_spec_path: str | Path):
     with open(index_path, "r", encoding="utf-8") as stream:
         index = json.load(stream)
     entries = index.get("entries")
     if not isinstance(entries, list):
         raise ValueError(f"{index_path}: missing entries array")
 
+    with open(texture_spec_path, "r", encoding="utf-8") as stream:
+        texture_spec = json.load(stream).get("textures", {})
     stats = collections.Counter()
     with zipfile.ZipFile(source_o2r, "r") as archive:
         direct, carried, source_names, palette_names = collect_palette_usage(archive)
@@ -313,15 +358,23 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
                         f"{resource}: PackBuild dimensions {list(image.size)} "
                         f"do not match index overrideSize {entry.get('overrideSize')}"
                     )
+            # A single-palette original texture has an authoritative, palette-decoded
+            # coarse colour grid in the pinned clean-room spec. PackBuild is RGBA
+            # artwork, so restore chroma spatially instead of treating RGB as indices.
+            grid_data = texture_spec.get(resource)
+            if grid_data is None:
+                stats["unresolved-colour-grid"] += 1
+                print(f"UNRESOLVED COLOUR GRID: {resource}")
+                continue
             try:
-                colorize_index_png(png_path, palette, fmt, source_indices)
+                colorize_from_coarse_grid(png_path, grid_data, entry.get("styleMode", "material-blend"))
             except ValueError as exc:
-                stats["unresolved-index-map"] += 1
-                print(f"UNRESOLVED INDEX MAP: {exc}")
+                stats["unresolved-colour-grid"] += 1
+                print(f"UNRESOLVED COLOUR GRID: {exc}")
                 continue
             stats["repaired"] += 1
             stats["ci4" if fmt == "ci4" else "ci8"] += 1
-            stats["multiple-palette-resolved" if len(entry.get("paletteResources", [])) > 1 else "single-palette"] += 1
+            stats["single-palette"] += 1
 
     stats["indexed-candidates"] = len(entries)
     stats["unrepaired"] = stats["indexed-candidates"] - stats["repaired"]
@@ -335,8 +388,9 @@ def main():
     parser.add_argument("--source-o2r", default=str(pack_root / "MajorasMask_UnrealInspired_Environment.o2r"))
     parser.add_argument("--packbuild", default=str(pack_root / "PackBuild"))
     parser.add_argument("--index", default=str(root / "OriginalGameData/indexed_texture_repair_index.json"))
+    parser.add_argument("--texture-spec", default=str(root / "OriginalGameData/indexed_texture_colour_grids.json"))
     args = parser.parse_args()
-    stats = repair_indexed_textures(args.source_o2r, args.packbuild, args.index)
+    stats = repair_indexed_textures(args.source_o2r, args.packbuild, args.index, args.texture_spec)
     print("Original indexed-palette repair:")
     for key in sorted(stats):
         print(f"  {key}: {stats[key]}")
