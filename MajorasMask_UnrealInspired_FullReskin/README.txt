@@ -7,13 +7,13 @@ The downloadable `texture-pack-v1-o2r` artifact produced by the GitHub Actions b
 
 Windows: put the .o2r in a `texturepacks` folder beside 2ship.exe. Open System > Mod library, refresh packs, enable this pack under Texture Packs, and restart the game.
 
-Quest: put the .o2r in `MMVR/texturepacks` in shared storage. In the headset, open System > Mod library, connect the MMVR shared folder, refresh, enable the pack, and restart the game.
+Quest: put the `.o2r` in `MMVR/texturepacks` in shared storage. Keep the `.o2r` extension; do not rename it to `.otr` because the VR runtime can route `.otr` through a different archive reader. In the headset, open System > Mod library, connect the MMVR shared folder, refresh, enable the pack, and restart the game.
 
 Look and limitations
 --------------------
 This is a stylized game-wide reskin inspired by Unreal Engine materials, not a literal Unreal Engine renderer. The native port's texture override format loads color maps; it does not apply the included normal, roughness, height, or ambient-occlusion maps as PBR shader inputs. Those maps are included as editable source material artwork for a future renderer or other 3D tools.
 
-The pack covers all 13,542 of 13,542 texture resources in the supplied export. Color-indexed textures are converted to RGBA replacements, with source palettes decoded where available; 835 indexed textures use an index-based fallback and may need visual refinement. Original alpha/intensity masks are retained. The 855 TLUT palette entries are included as native-format, byte-for-byte copies so they remain compatible with indexed-texture rendering. No in-game smoke test has been performed; validate it in your own installation and keep a normal save before enabling or changing packs.
+The pack covers all 13,542 of 13,542 texture resources in the supplied export. Color-indexed textures are converted to RGBA replacements, with source palettes decoded where available; 835 indexed textures currently use an index-based fallback. Original-game source data now identifies palette associations for 832 of those 835: 794 have one palette, 38 are used with multiple palettes, and three owl-eye textures remain unresolved. See `OriginalGameData/README.md` and `OriginalGameData/indexed_texture_repair_index.json` before changing those assets. Original alpha/intensity masks are retained. The 855 TLUT palette entries are included as native-format, byte-for-byte copies so they remain compatible with indexed-texture rendering. No in-game smoke test has been performed; validate it in your own installation and keep a normal save before enabling or changing packs.
 
 Source files
 ------------
