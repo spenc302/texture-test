@@ -1,0 +1,148 @@
+name: Build texture pack from MM-Reloaded 2Ship HD O2R
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-2ship-hd-reloaded-v2.yml'
+      - 'tools/**'
+      - 'tests/**'
+      - 'MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json'
+      - 'MajorasMask_UnrealInspired_FullReskin/PackBuild/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Check out repository and Git LFS artwork
+        uses: actions/checkout@v4
+        with:
+          ref: "main"
+          lfs: true
+
+      - name: Check out authoritative original game texture metadata
+        uses: actions/checkout@v4
+        with:
+          repository: zeldaret/mm
+          ref: 710e1a7d50a1f987f5fc55abca37f7fdcc8ee43d
+          path: decomp
+          sparse-checkout: |
+            assets/xml
+            src
+          sparse-checkout-cone-mode: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install archive tools and image dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+          python -m pip install --disable-pip-version-check Pillow numpy
+
+      - name: Download pinned 2Ship per-resource texture metadata
+        run: |
+          curl --fail --location --retry 4 --retry-all-errors \
+            --output 2ship-texture-metadata.json \
+            "https://raw.githubusercontent.com/GhostlyDark/MM-Reloaded/6750fb02b3ee22a9d3b0ec617cd24fd639191d26/ZELDA%20MAJORA'S%20MASK/Ports/2%20Ship%202%20Harkinian/manifest.json"
+          python -c "import json; d=json.load(open('2ship-texture-metadata.json')); print(f'Loaded {len(d):,} 2Ship texture metadata records')"
+
+      - name: Download and extract official MM-Reloaded v11.0.3 2Ship HD O2R
+        run: |
+          curl --fail --location --retry 4 --retry-all-errors \
+            --output mm-reloaded-2ship-hd.7z \
+            "https://github.com/GhostlyDark/MM-Reloaded/releases/download/v11.0.2/mm-reloaded-v11.0.3-2ship-o2r-hd.7z"
+          test "$(stat -c%s mm-reloaded-2ship-hd.7z)" -gt 500000000
+          7z t mm-reloaded-2ship-hd.7z
+          mkdir upstream-hd
+          7z x -y -oupstream-hd mm-reloaded-2ship-hd.7z
+
+      - name: Compare upstream archive layout and select compatible O2R
+        shell: bash
+        run: |
+          python - <<'PY'
+          import collections, json, pathlib, struct, zipfile
+          root = pathlib.Path("upstream-hd")
+          archives = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in {".o2r", ".zip"})
+          manifest = json.loads(pathlib.Path("MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json").read_text())
+          expected = {e["resource"] for e in manifest["entries"]}
+          candidates = []
+          report = []
+          for archive in archives:
+              try:
+                  with zipfile.ZipFile(archive) as z:
+                      names = z.namelist()
+                      name_set = set(names)
+                      marker = z.read("portVersion") if "portVersion" in name_set else b""
+                      versions = collections.Counter()
+                      types = collections.Counter()
+                      for name in names:
+                          if name == "portVersion":
+                              continue
+                          data = z.read(name)
+                          if len(data) >= 80 and struct.unpack_from("<I", data, 4)[0] == 0x4F544558:
+                              versions[struct.unpack_from("<I", data, 8)[0]] += 1
+                              types[struct.unpack_from("<I", data, 64)[0]] += 1
+                      row = {
+                          "archive": str(archive), "entries": len(names),
+                          "has_portVersion": bool(marker), "portVersion": marker.hex() or None,
+                          "manifest_matches": len(expected & {n[4:] if n.startswith("alt/") else n for n in name_set}),
+                          "manifest_missing": len(expected - {n[4:] if n.startswith("alt/") else n for n in name_set}),
+                          "upstream_only": len(name_set - expected - {"portVersion"}),
+                          "otex_versions": dict(versions), "texture_types": dict(types),
+                          "upstream_name_examples": names[:25],
+                          "manifest_name_examples": sorted(expected)[:25]
+                      }
+                      report.append(row)
+                      normalized = {n[4:] if n.startswith("alt/") else n for n in name_set}
+                      candidates.append((len(expected & normalized), archive))
+              except (zipfile.BadZipFile, KeyError):
+                  continue
+          pathlib.Path("upstream-layout-report.json").write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+          if not candidates:
+              raise SystemExit("No readable upstream O2R archive was found")
+          candidates.sort(key=lambda x: (x[0], str(x[1])), reverse=True)
+          selected = candidates[0][1]
+          pathlib.Path("selected-upstream-o2r.txt").write_text(str(selected))
+          print(f"Selected base O2R: {selected}")
+          PY
+
+      - name: Run regression tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Overlay PackBuild artwork onto MM-Reloaded HD archive
+        run: |
+          python tools/overlay_hd_reloaded.py \
+            --base "$(cat selected-upstream-o2r.txt)" \
+            --fallback MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r \
+            --packbuild MajorasMask_UnrealInspired_FullReskin/PackBuild \
+            --manifest MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json \
+            --decomp-assets decomp/assets/xml \
+            --port-metadata 2ship-texture-metadata.json \
+            --output texture-pack-main.o2r
+
+      - name: Verify final O2R archive
+        run: |
+          test -s texture-pack-v2.o2r
+          python -m zipfile -t texture-pack-v2.o2r
+          ls -lh texture-pack-v2.o2r
+          sha256sum texture-pack-v2.o2r
+
+      - name: Publish 2.0 O2R and source layout report
+        uses: actions/upload-artifact@v4
+        with:
+          name: texture-pack-main-mm-reloaded-hd-o2r
+          path: |
+            texture-pack-v2.o2r
+            upstream-layout-report.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
