@@ -18,6 +18,7 @@ from tools.repair_indexed_texture_palettes import (
     decode_rgba16_palette,
     display_list_texture_uses,
     resource_crc64,
+    repair_indexed_textures,
 )
 
 
@@ -172,6 +173,51 @@ class IndexedPaletteRepairTests(unittest.TestCase):
     def test_ci4_original_texels_unpack_high_nibble_first(self):
         indices = decode_indexed_pixels(bytes([0x1F]), 2, 1, "ci4")
         self.assertEqual(indices.tolist(), [[1, 15]])
+
+    def test_context_dependent_and_gridless_artwork_is_preserved_and_accounted_for(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pack = root / "PackBuild"
+            (pack / "scene").mkdir(parents=True)
+            (pack / "object").mkdir(parents=True)
+            scene_png = pack / "scene/shared.png"
+            object_png = pack / "object/no-grid.png"
+            artwork = np.array([[[180, 70, 40, 255], [90, 120, 160, 128]]], dtype=np.uint8)
+            Image.fromarray(artwork, "RGBA").save(scene_png)
+            Image.fromarray(artwork, "RGBA").save(object_png)
+
+            scene = "scenes/test/shared"
+            object_tex = "objects/test/no-grid"
+            palette_a = "scenes/a/test_TLUT"
+            palette_b = "scenes/b/test_TLUT"
+            palette_c = "objects/test/test_TLUT"
+            source_path = root / "source.o2r"
+            with zipfile.ZipFile(source_path, "w") as archive:
+                archive.writestr(scene, make_texture(1, 2, 1, bytes(8)))
+                archive.writestr(object_tex, make_texture(1, 2, 1, bytes(8)))
+                for name in (palette_a, palette_b, palette_c):
+                    archive.writestr(name, make_texture(2, 2, 1, struct.pack(">HH", 0xF801, 0x07C0)))
+
+            index_path = root / "index.json"
+            index_path.write_text(json.dumps({"entries": [
+                {"resource": scene, "asset": "scene/shared.png", "n64Format": "ci8",
+                 "originalSize": [2, 1], "overrideSize": [2, 1],
+                 "paletteResources": [{"resource": palette_a, "entries": 2}, {"resource": palette_b, "entries": 2}]},
+                {"resource": object_tex, "asset": "object/no-grid.png", "n64Format": "ci8",
+                 "originalSize": [2, 1], "overrideSize": [2, 1],
+                 "paletteResources": [{"resource": palette_c, "entries": 2}]}
+            ]}), encoding="utf-8")
+            grids_path = root / "grids.json"
+            grids_path.write_text(json.dumps({"textures": {}}), encoding="utf-8")
+
+            stats = repair_indexed_textures(source_path, pack, index_path, grids_path)
+            self.assertEqual(stats["preserved-multiple-palette-artwork"], 1)
+            self.assertEqual(stats["preserved-no-grid-artwork"], 1)
+            self.assertEqual(stats["accounted-for"], 2)
+            self.assertEqual(stats["unrepaired"], 0)
+            for path in (scene_png, object_png):
+                with Image.open(path) as image:
+                    self.assertTrue(np.array_equal(np.asarray(image), artwork))
 
     def test_ci4_index_uses_high_nibble(self):
         with tempfile.TemporaryDirectory() as temp:
