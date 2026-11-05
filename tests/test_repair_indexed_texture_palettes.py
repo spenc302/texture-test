@@ -13,6 +13,7 @@ from tools.repair_indexed_texture_palettes import (
     choose_palette,
     collect_palette_usage,
     colorize_index_png,
+    decode_indexed_pixels,
     decode_rgba16_palette,
     display_list_texture_uses,
     resource_crc64,
@@ -105,6 +106,20 @@ class IndexedPaletteRepairTests(unittest.TestCase):
             colorize_index_png(path, palette, "ci8")
             with Image.open(path) as image:
                 self.assertEqual(list(image.getdata()), [(255, 0, 0, 255), (0, 255, 0, 128)])
+
+    def test_original_ci8_texels_must_match_packbuild_index_map(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "indexed.png"
+            Image.fromarray(np.array([[[0, 0, 0, 255], [1, 1, 1, 255]]], dtype=np.uint8), "RGBA").save(path)
+            indices = decode_indexed_pixels(b"\\x00\\x01", 2, 1, "ci8")
+            palette = np.array([[255, 0, 0, 255], [0, 255, 0, 255]], dtype=np.uint8)
+            colorize_index_png(path, palette, "ci8", indices)
+            with Image.open(path) as image:
+                self.assertEqual(list(image.getdata()), [(255, 0, 0, 255), (0, 255, 0, 255)])
+
+    def test_ci4_original_texels_unpack_high_nibble_first(self):
+        indices = decode_indexed_pixels(bytes([0x1F]), 2, 1, "ci4")
+        self.assertEqual(indices.tolist(), [[1, 15]])
 
     def test_ci4_index_uses_high_nibble(self):
         with tempfile.TemporaryDirectory() as temp:
