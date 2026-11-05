@@ -37,10 +37,18 @@ calculates `HByteScale` and `VPixelScale` for the RGBA32 replacement. This
 preserves the runtime's tile-aware row-stride and partial-load behavior;
 `LOAD_AS_IMG` would bypass that path.
 
+Before the V1 builder runs, `tools/repair_indexed_texture_palettes.py`
+reconstructs the indexed fallback PNGs from the original CI4/CI8 texel indices
+and their original RGBA16 TLUTs. For textures referenced by multiple TLUTs,
+the pass uses actual ODLT display-list load counts to select the most-used
+palette; ties and missing associations are reported instead of guessed. The
+pass also checks that each PackBuild greyscale index map matches the original
+source texels when enlarged with nearest-neighbour sampling.
+
 The 855 entries marked `native-palette-preserve` remain native V0 RGBA16
 resources. Before preserving each resource byte-for-byte, the builder
 re-encodes its checked-in RGB5A1 PNG and verifies that it exactly reproduces
 the original big-endian palette bytes. This checks the source palette assets
 without changing their runtime representation. Resource names/order and the
-`portVersion` marker are verified after writing. The workflow runs the direct
-builder regression tests before packaging the artifact.
+`portVersion` marker are verified after writing. The workflow runs both
+repair and direct-builder regression tests before packaging the artifact.
