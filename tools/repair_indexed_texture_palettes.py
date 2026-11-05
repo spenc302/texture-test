@@ -207,7 +207,12 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
             if data_size != expected_bytes:
                 raise ValueError(f"{resource}: source indexed payload has {data_size} bytes, expected {expected_bytes}")
 
-            palette_name = choose_palette(entry, direct, carried, source_names)
+            try:
+                palette_name = choose_palette(entry, direct, carried, source_names)
+            except ValueError as exc:
+                stats["unresolved-palette"] += 1
+                print(f"UNRESOLVED PALETTE: {exc}")
+                continue
             if palette_name not in source_name_set:
                 raise ValueError(f"{resource}: selected palette {palette_name} is absent from source O2R")
             expected_entries = next(
@@ -215,7 +220,12 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
                 None,
             )
             palette = decode_rgba16_palette(archive.read(palette_name), expected_entries)
-            colorize_index_png(png_path, palette, fmt)
+            try:
+                colorize_index_png(png_path, palette, fmt)
+            except ValueError as exc:
+                stats["unresolved-index-map"] += 1
+                print(f"UNRESOLVED INDEX MAP: {exc}")
+                continue
             stats["repaired"] += 1
             stats["ci4" if fmt == "ci4" else "ci8"] += 1
             stats["multiple-palette-resolved" if len(entry.get("paletteResources", [])) > 1 else "single-palette"] += 1
