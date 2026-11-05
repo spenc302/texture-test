@@ -247,11 +247,6 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
             if resource_type(source) != "OTEX" or len(source) < HDR + 16:
                 raise ValueError(f"{resource}: source is not an OTEX texture")
             texture_type, width, height, data_size = struct.unpack_from("<4I", source, HDR)
-            if entry.get("originalSize") != [width, height]:
-                raise ValueError(
-                    f"{resource}: index originalSize {entry.get('originalSize')} "
-                    f"does not match source dimensions {[width, height]}"
-                )
 
             # The checked-in O2R is an RGBA32-converted template, even when
             # the repair index records the original N64 CI4/CI8 format.
@@ -260,6 +255,11 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
             # index map directly and still colour it with the original TLUT.
             source_indices = None
             if texture_type in (OTEX_TYPE_CI4, OTEX_TYPE_CI8):
+                if entry.get("originalSize") != [width, height]:
+                    raise ValueError(
+                        f"{resource}: index originalSize {entry.get('originalSize')} "
+                        f"does not match native indexed source dimensions {[width, height]}"
+                    )
                 expected_type = OTEX_TYPE_CI4 if fmt == "ci4" else OTEX_TYPE_CI8
                 if texture_type != expected_type:
                     raise ValueError(
@@ -273,6 +273,11 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
                 source_pixels = source[HDR + 16:HDR + 16 + data_size]
                 source_indices = decode_indexed_pixels(source_pixels, width, height, fmt)
             elif texture_type == OTEX_TYPE_RGBA32:
+                if entry.get("overrideSize") != [width, height]:
+                    raise ValueError(
+                        f"{resource}: index overrideSize {entry.get('overrideSize')} "
+                        f"does not match converted RGBA32 template dimensions {[width, height]}"
+                    )
                 if data_size != width * height * 4:
                     raise ValueError(
                         f"{resource}: source RGBA32 payload has {data_size} bytes, expected {width * height * 4}"
