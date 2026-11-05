@@ -96,7 +96,9 @@ jobs:
                           "manifest_matches": len(expected & name_set),
                           "manifest_missing": len(expected - name_set),
                           "upstream_only": len(name_set - expected - {"portVersion"}),
-                          "otex_versions": dict(versions), "texture_types": dict(types)
+                          "otex_versions": dict(versions), "texture_types": dict(types),
+                          "upstream_name_examples": names[:25],
+                          "manifest_name_examples": sorted(expected)[:25]
                       }
                       report.append(row)
                       if marker == bytes.fromhex("01000500000001"):
