@@ -13,6 +13,7 @@ from tools.repair_indexed_texture_palettes import (
     choose_palette,
     collect_palette_usage,
     colorize_index_png,
+    colorize_from_coarse_grid,
     decode_indexed_pixels,
     decode_rgba16_palette,
     display_list_texture_uses,
@@ -119,6 +120,42 @@ class IndexedPaletteRepairTests(unittest.TestCase):
             colorize_index_png(path, palette, "ci8")
             with Image.open(path) as image:
                 self.assertEqual(list(image.getdata()), [(255, 0, 0, 255), (255, 0, 0, 0)])
+
+    def test_coarse_palette_grid_transfers_colour_and_preserves_artwork_luminance_and_alpha(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "artwork.png"
+            # Neutral artwork with two luminance levels; original grid is green.
+            pixels = np.array(
+                [[[80, 80, 80, 255], [180, 180, 180, 96]]], dtype=np.uint8
+            )
+            Image.fromarray(pixels, "RGBA").save(path)
+            grid = {"w": 1, "h": 1, "grid": [[80, 160, 100, 255]]}
+            colorize_from_coarse_grid(path, grid, "material-blend")
+            with Image.open(path) as image:
+                out = np.asarray(image.convert("RGBA"))
+            self.assertEqual(out[..., 3].tolist(), [[255, 96]])
+            # Luminance remains within rounding tolerance while chroma becomes green.
+            before_y = 0.299 * pixels[..., 0] + 0.587 * pixels[..., 1] + 0.114 * pixels[..., 2]
+            after_y = 0.299 * out[..., 0] + 0.587 * out[..., 1] + 0.114 * out[..., 2]
+            self.assertTrue(np.all(np.abs(before_y - after_y) <= 1.5))
+            self.assertGreater(int(out[0, 0, 1]), int(out[0, 0, 0]))
+
+    def test_subtle_preserve_keeps_more_original_artwork_chroma(self):
+        with tempfile.TemporaryDirectory() as temp:
+            full = Path(temp) / "full.png"
+            subtle = Path(temp) / "subtle.png"
+            pixels = np.array([[[180, 80, 80, 255]]], dtype=np.uint8)
+            Image.fromarray(pixels, "RGBA").save(full)
+            Image.fromarray(pixels, "RGBA").save(subtle)
+            grid = {"w": 1, "h": 1, "grid": [[80, 160, 100, 255]]}
+            colorize_from_coarse_grid(full, grid, "material-blend")
+            colorize_from_coarse_grid(subtle, grid, "subtle-preserve")
+            with Image.open(full) as im:
+                full_pixel = np.asarray(im)[0, 0, :3].astype(int)
+            with Image.open(subtle) as im:
+                subtle_pixel = np.asarray(im)[0, 0, :3].astype(int)
+            self.assertGreater(abs(int(subtle_pixel[0]) - int(subtle_pixel[1])),
+                               abs(int(full_pixel[0]) - int(full_pixel[1])))
 
     def test_original_ci8_texels_must_match_packbuild_index_map(self):
         with tempfile.TemporaryDirectory() as temp:
