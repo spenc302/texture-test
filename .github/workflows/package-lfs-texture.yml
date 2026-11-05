@@ -14,6 +14,7 @@ on:
       - 'tools/repair_indexed_texture_palettes.py'
       - 'OriginalGameData/indexed_texture_repair_index.json'
       - 'tests/test_build_texture_pack.py'
+      - 'tests/test_repair_indexed_texture_palettes.py'
       - 'MajorasMask_UnrealInspired_FullReskin/PackBuild/**'
       - 'MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json'
       - 'MajorasMask_UnrealInspired_FullReskin/MajorasMask_UnrealInspired_Environment.o2r'
