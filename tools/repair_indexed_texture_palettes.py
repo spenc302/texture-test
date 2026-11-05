@@ -337,6 +337,27 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
                     f"{resource}: unsupported source OTEX type {texture_type} for indexed {fmt} repair"
                 )
 
+            palette_resources = entry.get("paletteResources", [])
+            # Shared scene textures have more than one legitimate in-game TLUT.
+            # A single baked RGBA32 replacement cannot represent both contexts.
+            # Validate every referenced native palette, then leave the user's
+            # PackBuild artwork untouched rather than arbitrarily recolouring it.
+            if len(palette_resources) > 1:
+                for palette_ref in palette_resources:
+                    palette_name = palette_ref["resource"]
+                    if palette_name not in source_name_set or palette_name not in palette_names:
+                        raise ValueError(f"{resource}: referenced palette {palette_name} is absent or not RGBA16 in source O2R")
+                    decode_rgba16_palette(archive.read(palette_name), palette_ref.get("entries"))
+                with Image.open(png_path) as image:
+                    if list(image.size) != entry.get("overrideSize"):
+                        raise ValueError(
+                            f"{resource}: PackBuild dimensions {list(image.size)} "
+                            f"do not match index overrideSize {entry.get('overrideSize')}"
+                        )
+                stats["preserved-multiple-palette-artwork"] += 1
+                print(f"PRESERVED PACKBUILD ARTWORK (multiple TLUT contexts): {resource}")
+                continue
+
             try:
                 palette_name = choose_palette(entry, direct, carried, source_names, palette_names)
             except ValueError as exc:
@@ -346,27 +367,30 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
             if palette_name not in source_name_set:
                 raise ValueError(f"{resource}: selected palette {palette_name} is absent from source O2R")
             expected_entries = next(
-                (item.get("entries") for item in entry.get("paletteResources", []) if item["resource"] == palette_name),
+                (item.get("entries") for item in palette_resources if item["resource"] == palette_name),
                 None,
             )
-            palette = decode_rgba16_palette(archive.read(palette_name), expected_entries)
+            # Decode and validate the actual native RGBA16 TLUT even when a
+            # spatial grid is unavailable. Never invent a spatial index map
+            # from a palette strip: it contains colours, not texel positions.
+            decode_rgba16_palette(archive.read(palette_name), expected_entries)
             with Image.open(png_path) as image:
                 if list(image.size) != entry.get("overrideSize"):
                     raise ValueError(
                         f"{resource}: PackBuild dimensions {list(image.size)} "
                         f"do not match index overrideSize {entry.get('overrideSize')}"
                     )
-            # A single-palette original texture has an authoritative, palette-decoded
-            # coarse colour grid in the pinned clean-room spec. PackBuild is RGBA
-            # artwork, so restore chroma spatially instead of treating RGB as indices.
+            # PackBuild is authored RGBA artwork, not a recoverable CI index map.
+            # Only apply chroma transfer when the pinned source has a spatial
+            # palette-decoded grid for this exact texture.
             grid_data = texture_spec.get(resource)
             if grid_data is None:
-                stats["unresolved-colour-grid"] += 1
-                print(f"UNRESOLVED COLOUR GRID: {resource}")
+                stats["preserved-no-grid-artwork"] += 1
+                print(f"PRESERVED PACKBUILD ARTWORK (no spatial colour grid): {resource}")
                 continue
             if [grid_data.get("w"), grid_data.get("h")] != entry.get("originalSize"):
-                stats["unresolved-colour-grid"] += 1
-                print(f"UNRESOLVED COLOUR GRID: {resource}: source grid dimensions do not match indexed originalSize")
+                stats["preserved-invalid-grid-artwork"] += 1
+                print(f"PRESERVED PACKBUILD ARTWORK (grid dimensions do not match): {resource}")
                 continue
             try:
                 colorize_from_coarse_grid(png_path, grid_data, entry.get("styleMode", "material-blend"))
@@ -379,7 +403,15 @@ def repair_indexed_textures(source_o2r: str | Path, packbuild_root: str | Path, 
             stats["single-palette"] += 1
 
     stats["indexed-candidates"] = len(entries)
-    stats["unrepaired"] = stats["indexed-candidates"] - stats["repaired"]
+    stats["preserved-artwork"] = (
+        stats["preserved-multiple-palette-artwork"]
+        + stats["preserved-no-grid-artwork"]
+        + stats["preserved-invalid-grid-artwork"]
+    )
+    stats["accounted-for"] = stats["repaired"] + stats["preserved-artwork"]
+    stats["unrepaired"] = stats["indexed-candidates"] - stats["accounted-for"]
+    if stats["unrepaired"]:
+        print(f"ERROR: {stats['unrepaired']} indexed textures remain unaccounted for")
     return stats
 
 
