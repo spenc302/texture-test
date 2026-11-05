@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/build-2ship-hd-reloaded-v2.yml'
       - 'tools/**'
+      - 'tests/**'
       - 'MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json'
       - 'MajorasMask_UnrealInspired_FullReskin/PackBuild/**'
 
@@ -111,6 +112,9 @@ jobs:
           pathlib.Path("selected-upstream-o2r.txt").write_text(str(selected))
           print(f"Selected base O2R: {selected}")
           PY
+
+      - name: Run regression tests
+        run: python -m unittest discover -s tests -v
 
       - name: Overlay PackBuild artwork onto MM-Reloaded HD archive
         run: |
