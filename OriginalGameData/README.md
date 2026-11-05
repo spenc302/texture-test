@@ -37,17 +37,21 @@ Five associations previously marked ambiguous are now resolved from explicit `Tl
 - Object TK texture `object_tk_Tex_00A350` → `object_tk_TLUT_00A300` at `0xA300`.
 - Child Zelda texture `gChildZelda1Tex_81C8` → `gChildZelda1TLUT_70C8` at `0x70C8`.
 
-The exact evidence is recorded per entry in `indexed_texture_repair_index.json`. These five palette associations are resolved, but their colour grids are not yet present in the checked-in coarse-grid file; they still need colour-data handling before they can be counted as repaired.
+The exact evidence is recorded per entry in `indexed_texture_repair_index.json`. These five palette associations are resolved, but no spatial colour grids are present for them. The repair validates their native TLUTs and deliberately preserves the PackBuild artwork unchanged; a palette strip alone cannot recover where each colour belongs in the texture.
 
 ### Repair implementation
 
 The PackBuild PNGs are reskin artwork, not recoverable original CI index maps. Their RGB values cannot be interpreted as original CI indices. The current repair transfers the original grid's spatial chroma into each PackBuild image using a YCbCr colour transfer: PackBuild luminance and alpha remain intact, preserving linework, shading, and texture detail. `material-blend` uses the original grid chroma fully; `subtle-preserve` blends it at 35% to retain more of the artwork's existing colour. The repair validates each grid's native dimensions against the indexed-texture metadata and validates the associated palette resource in the source O2R before applying it.
 
-### Why the 36 multiple-palette cases need special handling
+### Safe handling of the remaining 41 resources
 
-The remaining 36 resources are shared scene textures used with different TLUTs in different game contexts. A single baked RGBA32 image cannot preserve both palette outcomes. Do not arbitrarily bake the first palette into those resources. They need context-aware colour handling or a palette-aware runtime representation while retaining the PackBuild artwork.
+The repair pass accounts for all 835 indexed fallbacks without damaging authored PackBuild art:
 
-The 799 single-palette candidates have clean-room palette-aware coarse colour grids checked into `indexed_texture_colour_grids.json` and consumed by `tools/repair_indexed_texture_palettes.py`. The grid is intentionally lossy; it restores broad original colour character, not exact original texels.
+- **799 single-palette resources:** receive the existing palette-derived spatial chroma transfer. PackBuild luminance, detail, and alpha are retained.
+- **36 shared scene resources:** each referenced native TLUT is validated, but the PackBuild image is left unchanged. These textures are shared by scenes that load different palettes; baking one scene's palette into a single RGBA32 resource would make the other scene wrong.
+- **5 single-palette resources without spatial grids:** their native TLUTs are validated, but their PackBuild images are left unchanged. A palette strip identifies available colours, not their positions in the artwork, so inventing a spatial map would be unsafe.
+
+The 855 `.rgb5a1.png` palette resources are native palette assets preserved byte-for-byte by the builder; they are not a substitute for spatial texel maps. The repair script validates the source O2R TLUTs and only applies a colour transfer where a matching spatial grid exists. The summary reports repaired, intentionally preserved, and genuinely unaccounted-for resources separately.
 
 ## OTEX and archive compatibility
 
