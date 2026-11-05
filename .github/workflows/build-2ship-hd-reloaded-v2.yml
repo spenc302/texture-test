@@ -1,0 +1,99 @@
+name: Build 2.0 from MM-Reloaded 2Ship HD O2R
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [2.0]
+    paths:
+      - '.github/workflows/build-2ship-hd-reloaded-v2.yml'
+      - 'tools/**'
+      - 'MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json'
+      - 'MajorasMask_UnrealInspired_FullReskin/PackBuild/**'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out repository and Git LFS artwork
+        uses: actions/checkout@v4
+        with:
+          ref: 2.0
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install archive tools and image dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+          python -m pip install --disable-pip-version-check Pillow numpy
+
+      - name: Download official MM-Reloaded v11.0.3 2Ship HD O2R
+        run: |
+          curl --fail --location --retry 4 --retry-all-errors \
+            --output mm-reloaded-2ship-hd.7z \
+            "https://github.com/GhostlyDark/MM-Reloaded/releases/download/v11.0.2/mm-reloaded-v11.0.3-2ship-o2r-hd.7z"
+          test "$(stat -c%s mm-reloaded-2ship-hd.7z)" -gt 500000000
+          7z t mm-reloaded-2ship-hd.7z
+          mkdir upstream-hd
+          7z x -y -oupstream-hd mm-reloaded-2ship-hd.7z
+
+      - name: Identify upstream O2R and compare its resource layout
+        run: |
+          python - <<'PY'
+          import collections, json, pathlib, struct, zipfile
+          root = pathlib.Path("upstream-hd")
+          archives = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in {".o2r", ".zip"})
+          if not archives:
+              raise SystemExit("No O2R/ZIP archive found inside the official HD 7z")
+          manifest_path = pathlib.Path("MajorasMask_UnrealInspired_FullReskin/Overrides_Manifest.json")
+          manifest = json.loads(manifest_path.read_text())
+          expected = {e["resource"] for e in manifest["entries"]}
+          report = []
+          for archive in archives:
+              try:
+                  with zipfile.ZipFile(archive) as z:
+                      names = z.namelist()
+                      name_set = set(names)
+                      versions = collections.Counter()
+                      types = collections.Counter()
+                      for name in names:
+                          if name == "portVersion":
+                              continue
+                          data = z.read(name)
+                          if len(data) >= 80 and struct.unpack_from("<I", data, 4)[0] == 0x4F544558:
+                              versions[struct.unpack_from("<I", data, 8)[0]] += 1
+                              if len(data) >= 80:
+                                  types[struct.unpack_from("<I", data, 64)[0]] += 1
+                      report.append({
+                          "archive": str(archive), "entries": len(names),
+                          "has_portVersion": "portVersion" in name_set,
+                          "missing_manifest_resources": len(expected - name_set),
+                          "unexpected_resources": len(name_set - expected - {"portVersion"}),
+                          "missing_examples": sorted(expected - name_set)[:12],
+                          "unexpected_examples": sorted(name_set - expected - {"portVersion"})[:12],
+                          "otex_versions": dict(versions), "texture_types": dict(types),
+                          "portVersion": z.read("portVersion").hex() if "portVersion" in name_set else None,
+                      })
+              except zipfile.BadZipFile:
+                  continue
+          pathlib.Path("upstream-layout-report.json").write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+          if not report:
+              raise SystemExit("No ZIP-compatible O2R found in official HD archive")
+          PY
+
+      - name: Upload upstream layout report
+        uses: actions/upload-artifact@v4
+        with:
+          name: mm-reloaded-hd-layout-report
+          path: upstream-layout-report.json
+          if-no-files-found: error
+          retention-days: 14
