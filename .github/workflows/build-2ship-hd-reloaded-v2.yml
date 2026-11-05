@@ -22,7 +22,7 @@ jobs:
       - name: Check out repository and Git LFS artwork
         uses: actions/checkout@v4
         with:
-          ref: 2.0
+          ref: "2.0"
           lfs: true
 
       - name: Check out authoritative original game texture metadata
