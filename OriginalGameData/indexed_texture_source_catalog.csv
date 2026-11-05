@@ -1,0 +1,2 @@
+index,xml_group,xml_file,texture_name,resource_name,n64_format,source_width,source_height,rom_offset,classification
+526,interface,interface/icon_item_field_static.xml,gWorldMapImageTex,world_map_image,ci8,216,128,0x0,unclassified — needs extracted texture preview
