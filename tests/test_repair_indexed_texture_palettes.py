@@ -154,8 +154,10 @@ class IndexedPaletteRepairTests(unittest.TestCase):
                 full_pixel = np.asarray(im)[0, 0, :3].astype(int)
             with Image.open(subtle) as im:
                 subtle_pixel = np.asarray(im)[0, 0, :3].astype(int)
-            self.assertGreater(abs(int(subtle_pixel[0]) - int(subtle_pixel[1])),
-                               abs(int(full_pixel[0]) - int(full_pixel[1])))
+            original = pixels[0, 0, :3].astype(int)
+            subtle_distance = int(np.linalg.norm(subtle_pixel - original))
+            full_distance = int(np.linalg.norm(full_pixel - original))
+            self.assertLess(subtle_distance, full_distance)
 
     def test_original_ci8_texels_must_match_packbuild_index_map(self):
         with tempfile.TemporaryDirectory() as temp:
