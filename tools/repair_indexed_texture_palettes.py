@@ -30,11 +30,7 @@ POLY = 0x42F0E1EBA9EA3693
 def resource_crc64(name: str) -> int:
     crc = 0xFFFFFFFFFFFFFFFF
     for byte in name.encode():
-        value = byte << 56
-        for _ in range(8):
-            value = ((value << 1) ^ POLY) if value & (1 << 63) else (value << 1)
-            value &= 0xFFFFFFFFFFFFFFFF
-        crc ^= value
+        crc ^= byte << 56
         for _ in range(8):
             crc = ((crc << 1) ^ POLY) & 0xFFFFFFFFFFFFFFFF if crc & (1 << 63) else (crc << 1) & 0xFFFFFFFFFFFFFFFF
     return crc
