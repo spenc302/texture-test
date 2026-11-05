@@ -107,6 +107,19 @@ class IndexedPaletteRepairTests(unittest.TestCase):
             with Image.open(path) as image:
                 self.assertEqual(list(image.getdata()), [(255, 0, 0, 255), (0, 255, 0, 128)])
 
+    def test_transparent_pixels_may_contain_non_greyscale_hidden_rgb(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "transparent-hidden-rgb.png"
+            pixels = np.array(
+                [[[0, 0, 0, 255], [240, 10, 90, 0]]],
+                dtype=np.uint8,
+            )
+            Image.fromarray(pixels, "RGBA").save(path)
+            palette = np.array([[255, 0, 0, 255]], dtype=np.uint8)
+            colorize_index_png(path, palette, "ci8")
+            with Image.open(path) as image:
+                self.assertEqual(list(image.getdata()), [(255, 0, 0, 255), (255, 0, 0, 0)])
+
     def test_original_ci8_texels_must_match_packbuild_index_map(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "indexed.png"
