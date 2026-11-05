@@ -25,28 +25,29 @@ The clean-room texture spec and the current `Overrides_Manifest.json` were compa
 | Original-game texture resources in clean-room spec | 13,542 |
 | Original CI4/CI8 resources | 3,067 |
 | CI4/CI8 resources marked `paletteDecoded: false` in the pack manifest | **835** |
-| Those 835 with a source palette association | **832** |
-| Single-palette candidates | 794 |
-| Multiple-palette candidates | 38 |
-| No palette association found yet | 3 |
+| Those 835 with a source palette association | **835** |
+| Single-palette candidates after XML review | 799 |
+| Multiple-palette candidates requiring context handling | 36 |
+| Palette associations still unresolved | 0 |
 
-The three unresolved resources are:
+Five associations previously marked ambiguous are now resolved from explicit `TlutOffset` declarations in the pinned zeldaret XML:
 
-- `objects/object_owl/gOwlEyeClosedTex`
-- `objects/object_owl/gOwlEyeHalfTex`
-- `objects/object_owl/gOwlEyeOpenTex`
+- Owl closed eye → `gOwlFlyingEyeTLUT` at `0x74B8`.
+- Owl half-open and open eyes → `gOwlPerchingEyeTLUT` at `0x72B8`. The XML comments that the two owl TLUTs are identical.
+- Object TK texture `object_tk_Tex_00A350` → `object_tk_TLUT_00A300` at `0xA300`.
+- Child Zelda texture `gChildZelda1Tex_81C8` → `gChildZelda1TLUT_70C8` at `0x70C8`.
 
-The 832 mapped candidates and their exact source resource paths, native formats, dimensions, replacement assets, and palette associations are recorded in `indexed_texture_repair_index.json`.
+The exact evidence is recorded per entry in `indexed_texture_repair_index.json`. These five palette associations are resolved, but their colour grids are not yet present in the checked-in coarse-grid file; they still need colour-data handling before they can be counted as repaired.
 
 ### Repair implementation
 
-The PackBuild PNGs are full-colour RGBA reskin artwork, not greyscale CI index maps. Their RGB values cannot be interpreted as original CI indices. The repair therefore transfers the original grid's spatial chroma into each PackBuild image using a YCbCr colour transfer: PackBuild luminance and alpha remain intact, preserving its linework, shading, and texture detail. `material-blend` uses the original grid chroma fully; `subtle-preserve` blends it at 35% to retain more of the artwork's existing colour. The repair validates each grid's native dimensions against the indexed-texture metadata and validates the associated palette resource in the source O2R before applying it.
+The PackBuild PNGs are reskin artwork, not recoverable original CI index maps. Their RGB values cannot be interpreted as original CI indices. The current repair transfers the original grid's spatial chroma into each PackBuild image using a YCbCr colour transfer: PackBuild luminance and alpha remain intact, preserving linework, shading, and texture detail. `material-blend` uses the original grid chroma fully; `subtle-preserve` blends it at 35% to retain more of the artwork's existing colour. The repair validates each grid's native dimensions against the indexed-texture metadata and validates the associated palette resource in the source O2R before applying it.
 
-### Why the 38 multiple-palette cases need special handling
+### Why the 36 multiple-palette cases need special handling
 
-Some CI textures are reused with different TLUTs in different game contexts. Replacing one such resource with a single RGBA32 image discards that context-dependent palette choice. Do not arbitrarily bake the first palette into those 38 resources. They need per-use review or must retain their indexed/palette-aware runtime behaviour.
+The remaining 36 resources are shared scene textures used with different TLUTs in different game contexts. A single baked RGBA32 image cannot preserve both palette outcomes. Do not arbitrarily bake the first palette into those resources. They need context-aware colour handling or a palette-aware runtime representation while retaining the PackBuild artwork.
 
-For the 794 single-palette candidates, the clean-room `textures.json` palette-aware coarse colour grids are now checked into `indexed_texture_colour_grids.json` and consumed by `tools/repair_indexed_texture_palettes.py`. The grid is intentionally lossy; it restores broad original colour character, not exact original texels. The 38 multi-palette assets remain unchanged, and the three owl-eye resources still need a display-list/XML/object-level palette investigation.
+The 799 single-palette candidates have clean-room palette-aware coarse colour grids checked into `indexed_texture_colour_grids.json` and consumed by `tools/repair_indexed_texture_palettes.py`. The grid is intentionally lossy; it restores broad original colour character, not exact original texels.
 
 ## OTEX and archive compatibility
 
@@ -56,10 +57,9 @@ The current texture builder emits OTEX V1 RGBA32 resources using `TEX_FLAG_LOAD_
 
 ## Next texture repair pass
 
-1. Use `indexed_texture_repair_index.json` to isolate the 835 known CI fallbacks.
-2. Transfer the 794 single-palette clean-room colour grids onto the existing PackBuild artwork, preserving its luminance detail, alpha, and current output dimensions.
-3. Leave the 38 multi-palette assets unchanged until their context-specific use is resolved.
-4. Investigate the three owl-eye resources using the original display lists and object-local TLUT rules.
-5. Rebuild the final V1 O2R and validate its ZIP structure, `portVersion`, resource names/order, OTEX V1 headers, and palette preservation before enabling it in VR.
+1. Generate or otherwise establish the five missing colour grids using their now-explicit palette associations.
+2. Resolve the 36 shared scene textures without collapsing their context-specific TLUT behaviour.
+3. Confirm the colour-transfer strength preserves the PackBuild art and the user's intended colours.
+4. Rebuild the final V1 O2R and validate its ZIP structure, `portVersion`, resource names/order, OTEX V1 headers, and palette preservation before enabling it in VR.
 
-No GitHub Actions workflow was changed or triggered as part of adding this source metadata.
+No GitHub Actions workflow was changed or triggered as part of recording these XML-backed palette resolutions.
