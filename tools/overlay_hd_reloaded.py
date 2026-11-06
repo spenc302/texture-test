@@ -48,10 +48,18 @@ def build_rgba32(template: bytes, resource: str, pixels: bytes,
         raise ValueError(f"{resource}: unsupported OTEX version {version}")
     if version == 1 and len(template) < V1_PIXEL_OFFSET:
         raise ValueError(f"{resource}: truncated OTEX V1 template")
-    texture_type = struct.unpack_from("<I", template, OTEX_HEADER_SIZE)[0]
-    if texture_type != 1:
-        raise ValueError(f"{resource}: expected RGBA32 resource, found texture type {texture_type}")
+    texture_type, template_width, template_height = struct.unpack_from("<III", template, OTEX_HEADER_SIZE)
+    # The HD archive stores the original resource in its native OTEX texture
+    # type (I4, I8, IA4, IA8, etc.). PackBuild artwork is deliberately emitted
+    # as RGBA32 LOAD_AS_RAW, so the source type is metadata, not a constraint.
+    if texture_type not in range(1, 10):
+        raise ValueError(f"{resource}: unsupported source OTEX texture type {texture_type}")
     width, height = entry["_override_size"]
+    if (template_width, template_height) != (width, height):
+        raise ValueError(
+            f"{resource}: HD template dimensions {template_width}x{template_height} "
+            f"do not match manifest overrideSize {(width, height)}"
+        )
     if image_size != (width, height):
         raise ValueError(f"{resource}: PackBuild image is {image_size}, expected {(width, height)}")
     expected_bytes = width * height * 4
